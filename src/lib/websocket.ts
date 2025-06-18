@@ -1,6 +1,8 @@
 import type { WebSocketMessage } from "../../common/web-socket-types";
 
-const WS_URL = "ws://localhost:3001";
+// Use window.location.hostname to connect to the server hosting the frontend
+// This makes it work when accessing from other devices on the same network
+const WS_URL = `ws://${window.location.hostname}:3001`;
 
 let socket: WebSocket | null = null;
 let pendingSubscribers: Array<(socket: WebSocket) => void> = [];
