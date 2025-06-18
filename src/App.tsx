@@ -147,7 +147,7 @@ function App() {
                 <li key={entry._id} className="text-gray-700 mb-1 truncate">
                   {entry.content}
                   <span className="text-xs text-gray-400 ml-2">
-                    ({new Date(entry.createdAt).toLocaleTimeString()})
+                    ({new Date(entry._createdAt).toLocaleTimeString()})
                   </span>
                 </li>
               ))}

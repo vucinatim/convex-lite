@@ -1,4 +1,12 @@
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid"; // For _id generation
+
+// Base schema definition for common fields
+const baseSchemaFields = {
+  _id: z.string().default(() => `id_${uuidv4()}`), // Ensure _id is always present
+  _createdAt: z.number().default(() => Date.now()),
+  _updatedAt: z.number().default(() => Date.now()), // Will be updated manually on modifications
+};
 
 /**
  * Defines the schema for the application data.
@@ -13,45 +21,33 @@ export const schema = {
    * though our current implementation uses a single in-memory counter.
    */
   counters: z.object({
-    _id: z
-      .string()
-      .default(() => `counter_${Math.random().toString(36).substr(2)}`),
-    name: z.string(), // e.g., "global", "userSpecific"
-    value: z.number(),
+    ...baseSchemaFields,
+    name: z.string().default("globalCounter"), // Name might be specific to the counter's purpose
+    value: z.number().default(0),
   }),
 
   /**
    * A collection for generic documents.
    */
   documents: z.object({
-    _id: z
-      .string()
-      .default(() => `doc_${Math.random().toString(36).substr(2)}`),
+    ...baseSchemaFields,
     title: z.string(),
-    content: z.string().optional(),
-    createdAt: z.number().default(() => Date.now()),
-    updatedAt: z.number().default(() => Date.now()),
+    content: z.string(),
   }),
 
   // Example of a more complex schema for a to-do item
   todos: z.object({
-    _id: z
-      .string()
-      .default(() => `todo_${Math.random().toString(36).substr(2)}`),
-    text: z.string().min(1, { message: "Todo text cannot be empty" }),
-    isCompleted: z.boolean().default(false),
-    createdAt: z.number().default(() => Date.now()),
+    ...baseSchemaFields,
+    text: z.string(),
+    completed: z.boolean().default(false),
   }),
 
   /**
    * A collection for simple text entries.
    */
   text_entries: z.object({
-    _id: z
-      .string()
-      .default(() => `text_${Math.random().toString(36).substr(2)}`),
-    content: z.string().min(1, { message: "Text content cannot be empty" }),
-    createdAt: z.number().default(() => Date.now()),
+    ...baseSchemaFields,
+    content: z.string(),
   }),
 };
 

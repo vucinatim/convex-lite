@@ -2,7 +2,10 @@ import express, { Express, Request, Response } from "express";
 import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
-import { z } from "zod"; // Import Zod
+import { z } from "zod";
+import fs from "fs/promises"; // For dynamic loading
+import path from "path"; // For dynamic loading
+import { fileURLToPath, pathToFileURL } from "url"; // For __dirname equivalent in ESM and pathToFileURL
 
 import type {
   WebSocketMessage,
@@ -10,19 +13,119 @@ import type {
   MutationRequestMessage,
   DataResponseMessage,
   ErrorResponseMessage,
-  TextEntry, // Add TextEntry type import if not already there from common types
-  Counter, // Also from common types
-  // Document, // Removed as unused for now
-  // Todo,     // Removed as unused for now
+  // TextEntry, // Removed as unused in server.ts
+  // Counter,   // Removed as unused in server.ts
 } from "../common/web-socket-types.ts";
 import { MessageType } from "../common/web-socket-types.ts";
 
-import { schema as appSchema } from "../convex/schema.ts"; // Counter is already imported
-// TextEntry type from schema will be imported via common-web-socket-types or directly if preferred
+import { schema as appSchema } from "../convex/schema.ts";
 import db from "./lib/database.ts";
+
+// Handler Context type to be passed to API functions
+export interface HandlerContext {
+  db: typeof db;
+  appSchema: typeof appSchema;
+  broadcastQueryUpdate: <TData>(queryKey: string, data: TData) => void;
+  // We can add auth, etc. later
+}
+
+// Registries for dynamically loaded API handlers
+const queryHandlers = new Map<
+  string,
+  (context: HandlerContext, args: unknown) => Promise<unknown>
+>();
+const mutationHandlers = new Map<
+  string,
+  (context: HandlerContext, args: unknown) => Promise<unknown>
+>();
+const mutationAffectedTables = new Map<string, string[]>();
 
 const app: Express = express();
 const port: number | string = process.env.PORT || 3001;
+
+// Helper to get __dirname in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function loadApiHandlers() {
+  console.log("Loading API handlers...");
+  const apiDir = path.resolve(__dirname, "../convex/api");
+  try {
+    const files = await fs.readdir(apiDir);
+    for (const file of files) {
+      if (file.endsWith(".ts") || file.endsWith(".js")) {
+        // .js for compiled output if any
+        const modulePath = path.join(apiDir, file);
+        try {
+          // Use pathToFileURL for dynamic imports in ESM
+          const module = await import(pathToFileURL(modulePath).href);
+          for (const exportName in module) {
+            if (typeof module[exportName] === "function") {
+              const handler = module[exportName];
+              // Heuristic: functions starting with get/list are queries, others mutations
+              if (
+                exportName.startsWith("get") ||
+                exportName.startsWith("list")
+              ) {
+                queryHandlers.set(exportName, handler);
+                console.log(
+                  `Registered query handler: ${exportName} from ${file}`
+                );
+              } else {
+                // Assume it's a mutation if not explicitly a query by name
+                // More robust would be explicit wrapping like Convex.query/mutation
+                mutationHandlers.set(exportName, handler);
+                console.log(
+                  `Registered mutation handler: ${exportName} from ${file}`
+                );
+
+                // Check for associated affectedTables metadata
+                // Convention: export const affectedTablesByApiFileName = { mutationName: ['table'] }
+                // Or more simply: export const affectedTables_mutationName = ['table']
+                // For now, let's look for a related export like 'affectedTablesByCounterApi'
+                // and then pick the specific mutation key from it.
+                const baseName = path
+                  .basename(file, path.extname(file))
+                  .replace(/_api$/, ""); // e.g., "counter" or "text_entries"
+                const capitalizedBaseName =
+                  baseName.charAt(0).toUpperCase() + baseName.slice(1); // e.g., "Counter" or "TextEntries"
+                const metadataExportName = `affectedTablesBy${capitalizedBaseName}Api`; // e.g. affectedTablesByCounterApi
+                if (
+                  module[metadataExportName] &&
+                  module[metadataExportName][exportName]
+                ) {
+                  mutationAffectedTables.set(
+                    exportName,
+                    module[metadataExportName][exportName]
+                  );
+                  console.log(
+                    `  Registered affectedTables for ${exportName}: ${module[
+                      metadataExportName
+                    ][exportName].join(", ")}`
+                  );
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.error(
+            `Error importing module ${modulePath} (${
+              pathToFileURL(modulePath).href
+            }):`,
+            err
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Error reading API directory:", err);
+    // Decide if server should start if handlers can't be loaded
+  }
+  console.log("API handlers loading complete.");
+  console.log("Query Handlers:", Array.from(queryHandlers.keys()));
+  console.log("Mutation Handlers:", Array.from(mutationHandlers.keys()));
+  console.log("Mutation Affected Tables:", mutationAffectedTables);
+}
 
 async function initializeDatabaseSchema() {
   console.log("Initializing database schema...");
@@ -32,22 +135,28 @@ async function initializeDatabaseSchema() {
       if (!tableExists) {
         console.log(`Creating table: ${tableName}`);
         await db.schema.createTable(tableName, (table) => {
-          // zodSchema is a ZodObject and shape should exist
           if (typeof zodSchema.shape !== "function" && zodSchema.shape) {
-            // zodSchema is a ZodObject and shape should exist
             for (const [fieldName, fieldSchemaUntyped] of Object.entries(
               zodSchema.shape
             )) {
               const fieldSchema = fieldSchemaUntyped as z.ZodTypeAny;
               let columnBuilder;
               const zType = fieldSchema._def.typeName;
+
+              // Handle specific fields first
               if (fieldName === "_id") {
-                columnBuilder = table.string("_id").primary();
+                columnBuilder = table.string("_id").primary(); // _id is primary key
+              } else if (
+                fieldName === "_createdAt" ||
+                fieldName === "_updatedAt"
+              ) {
+                columnBuilder = table.bigInteger(fieldName).notNullable(); // Timestamps as BIGINT, not nullable
               } else if (zType === "ZodString") {
                 columnBuilder = table.string(fieldName);
               } else if (zType === "ZodNumber") {
+                // Keep existing logic for other number fields (e.g., counter value)
                 if (
-                  fieldName.includes("At") ||
+                  fieldName.includes("At") || // This might conflict if we have other 'At' fields not timestamps
                   fieldName.includes("Timestamp")
                 ) {
                   columnBuilder = table.bigInteger(fieldName);
@@ -71,33 +180,44 @@ async function initializeDatabaseSchema() {
                 if (innerTypeName === "ZodString")
                   columnBuilder = table.string(fieldName);
                 else if (innerTypeName === "ZodNumber")
-                  columnBuilder = table.integer(fieldName);
+                  columnBuilder =
+                    table.integer(
+                      fieldName
+                    ); // Could also be bigInteger based on inner type nature
                 else {
                   console.warn(
                     `Unhandled optional/nullable inner type ${innerTypeName} for ${fieldName} in ${tableName}`
                   );
                   continue;
                 }
+                // Optional/nullable fields by definition don't get .notNullable() here
               } else {
                 console.warn(
                   `Unhandled Zod type ${zType} for ${fieldName} in ${tableName}`
                 );
                 continue;
               }
+
+              // Apply notNullable for non-optional/nullable fields, excluding special fields handled above
               if (
                 columnBuilder &&
+                fieldName !== "_id" && // Already handled
+                fieldName !== "_createdAt" && // Already handled
+                fieldName !== "_updatedAt" && // Already handled
                 zType !== "ZodOptional" &&
                 zType !== "ZodNullable"
               ) {
-                // notNullable exists on columnBuilder
                 columnBuilder.notNullable();
               }
+
+              // Apply defaultTo if specified in Zod schema, but _createdAt and _updatedAt defaults are app-level
               if (
                 columnBuilder &&
                 fieldSchema._def.defaultValue !== undefined &&
-                typeof fieldSchema._def.defaultValue !== "function"
+                typeof fieldSchema._def.defaultValue !== "function" && // Knex defaultTo needs a literal
+                fieldName !== "_createdAt" && // Application logic handles default via Zod
+                fieldName !== "_updatedAt" // Application logic handles default via Zod
               ) {
-                // defaultTo exists on columnBuilder
                 columnBuilder.defaultTo(fieldSchema._def.defaultValue);
               }
             }
@@ -119,48 +239,33 @@ async function initializeDatabaseSchema() {
   }
 }
 
-initializeDatabaseSchema()
-  .then(() => {
-    app.use(cors());
-    app.use(express.json());
+async function startServer() {
+  await initializeDatabaseSchema();
+  await loadApiHandlers(); // Load handlers after DB is ready
 
-    app.get("/api", (req: Request, res: Response) => {
-      res.json({ message: "Hello from server!" });
-    });
+  app.use(cors());
+  app.use(express.json());
 
-    const server = http.createServer(app);
-    const wss = new WebSocketServer({ server });
+  app.get("/api", (req: Request, res: Response) => {
+    res.json({ message: "Hello from server!" });
+  });
 
-    let globalCounterData: Counter | null = null;
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server });
 
-    async function ensureGlobalCounter() {
-      const existing = await db("counters")
-        .where({ name: "globalCounter" })
-        .first();
-      if (existing) {
-        globalCounterData = existing as Counter;
-      } else {
-        // Use the Counter type from common types for parsing to ensure consistency
-        const newCounterData = { name: "globalCounter", value: 0 };
-        const parsedCounter = appSchema.counters.parse(
-          newCounterData
-        ) as Counter;
-        await db("counters").insert(parsedCounter);
-        globalCounterData = parsedCounter;
-      }
-      console.log("Global counter ensured:", globalCounterData);
-    }
+  const clients = new Set<WebSocket>();
 
-    ensureGlobalCounter();
-
-    const clients = new Set<WebSocket>();
-
-    const broadcastCounterUpdate = () => {
-      if (!globalCounterData) return;
-      const message: DataResponseMessage<Counter> = {
+  const broadcastTableData = async (
+    tableName: keyof typeof appSchema,
+    database: typeof db
+  ) => {
+    try {
+      const data = await database(tableName).select("*");
+      const queryKeyForTable = `table_${tableName}`;
+      const message: DataResponseMessage<unknown[]> = {
         type: MessageType.DATA_UPDATE,
-        queryKey: "getCounter",
-        data: globalCounterData,
+        queryKey: queryKeyForTable,
+        data: data,
       };
       const messageString = JSON.stringify(message);
       clients.forEach((client) => {
@@ -168,266 +273,212 @@ initializeDatabaseSchema()
           client.send(messageString);
         }
       });
-    };
+      console.log(
+        `Broadcasted data update for table: ${tableName} to key ${queryKeyForTable}`
+      );
+    } catch (error) {
+      console.error(`Error broadcasting table data for ${tableName}:`, error);
+    }
+  };
 
-    const broadcastTextEntriesUpdate = async () => {
-      try {
-        const entries = (await db("text_entries")
-          .select("*")
-          .orderBy("createdAt", "desc")) as TextEntry[];
-        const message: DataResponseMessage<TextEntry[]> = {
-          type: MessageType.DATA_UPDATE,
-          queryKey: "getTextEntries",
-          data: entries,
-        };
-        const messageString = JSON.stringify(message);
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(messageString);
-          }
-        });
-      } catch (error) {
-        console.error("Error broadcasting text entries update:", error);
+  const broadcastQueryUpdateForHandler = <TData>(
+    queryKey: string,
+    data: TData
+  ) => {
+    const message: DataResponseMessage<TData> = {
+      type: MessageType.DATA_UPDATE,
+      queryKey: queryKey,
+      data: data,
+    };
+    const messageString = JSON.stringify(message);
+    clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(messageString);
       }
-    };
+    });
+    console.log(
+      `Broadcasted data update via handler for queryKey: ${queryKey}`
+    );
+  };
 
-    // New generic function to broadcast data for any table
-    const broadcastTableData = async (
-      tableName: keyof typeof appSchema,
-      database: typeof db
-    ) => {
+  wss.on("connection", (ws: WebSocket) => {
+    console.log("Client connected via WebSocket");
+    clients.add(ws);
+
+    ws.on("message", async (messageString: string) => {
+      let parsedMessage: WebSocketMessage;
       try {
-        const data = await database(tableName).select("*"); // Fetch all data
-        const queryKeyForTable = `table_${tableName}`;
-        const message: DataResponseMessage<unknown[]> = {
-          // Data is an array of records
-          type: MessageType.DATA_UPDATE,
-          queryKey: queryKeyForTable,
-          data: data,
-        };
-        const messageString = JSON.stringify(message);
-        clients.forEach((client) => {
-          if (client.readyState === WebSocket.OPEN) {
-            client.send(messageString);
-          }
-        });
-        console.log(
-          `Broadcasted data update for table: ${tableName} to key ${queryKeyForTable}`
-        );
+        parsedMessage = JSON.parse(messageString) as WebSocketMessage;
       } catch (error) {
-        console.error(`Error broadcasting table data for ${tableName}:`, error);
+        const errorMsg: ErrorResponseMessage = {
+          type: MessageType.ERROR,
+          message: `Invalid JSON message format: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+        ws.send(JSON.stringify(errorMsg));
+        return;
       }
-    };
 
-    wss.on("connection", (ws: WebSocket) => {
-      console.log("Client connected via WebSocket");
-      clients.add(ws);
+      const handlerContext: HandlerContext = {
+        db,
+        appSchema,
+        broadcastQueryUpdate: broadcastQueryUpdateForHandler,
+      };
 
-      ws.on("message", async (messageString: string) => {
-        let parsedMessage: WebSocketMessage;
-        try {
-          parsedMessage = JSON.parse(messageString) as WebSocketMessage;
-        } catch (error) {
-          const errorMsg: ErrorResponseMessage = {
-            type: MessageType.ERROR,
-            message: `Invalid JSON message format: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          };
-          ws.send(JSON.stringify(errorMsg));
-          return;
-        }
+      if (parsedMessage.type === MessageType.QUERY) {
+        const queryMessage = parsedMessage as QueryRequestMessage;
+        const handler = queryHandlers.get(queryMessage.queryKey);
 
-        if (parsedMessage.type === MessageType.QUERY) {
-          const queryMessage = parsedMessage as QueryRequestMessage;
-          if (queryMessage.queryKey === "getCounter") {
-            if (!globalCounterData) {
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: queryMessage.id,
-                message: "Global counter not found",
-              };
-              ws.send(JSON.stringify(errorMsg));
-              return;
-            }
-            const response: DataResponseMessage<Counter> = {
+        if (handler) {
+          try {
+            const result = await handler(
+              handlerContext,
+              queryMessage.params || {}
+            );
+            const response: DataResponseMessage<unknown> = {
+              // Type result properly based on handler return
               type: MessageType.DATA_UPDATE,
               id: queryMessage.id,
-              queryKey: "getCounter",
-              data: globalCounterData,
+              queryKey: queryMessage.queryKey,
+              data: result,
             };
             ws.send(JSON.stringify(response));
-          } else if (queryMessage.queryKey === "getTextEntries") {
-            try {
-              const entries = (await db("text_entries")
-                .select("*")
-                .orderBy("createdAt", "desc")) as TextEntry[];
-              const response: DataResponseMessage<TextEntry[]> = {
-                type: MessageType.DATA_UPDATE,
-                id: queryMessage.id,
-                queryKey: "getTextEntries",
-                data: entries,
-              };
-              ws.send(JSON.stringify(response));
-            } catch (error) {
-              console.error("Error fetching text entries:", error);
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: queryMessage.id,
-                message: `Failed to fetch text entries: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              };
-              ws.send(JSON.stringify(errorMsg));
-            }
-          } else if (
-            queryMessage.queryKey &&
-            queryMessage.queryKey.startsWith("table_")
-          ) {
-            const tableName = queryMessage.queryKey.substring(
-              "table_".length
-            ) as keyof typeof appSchema;
-            if (!Object.prototype.hasOwnProperty.call(appSchema, tableName)) {
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: queryMessage.id,
-                message: `Unknown table specified in queryKey: ${tableName}`,
-              };
-              ws.send(JSON.stringify(errorMsg));
-              return;
-            }
-            try {
-              const data = await db(tableName).select("*");
-              const response: DataResponseMessage<unknown[]> = {
-                type: MessageType.DATA_UPDATE,
-                id: queryMessage.id,
-                queryKey: queryMessage.queryKey, // Respond to the specific table_X key
-                data: data,
-              };
-              ws.send(JSON.stringify(response));
-            } catch (error) {
-              console.error(
-                `Error fetching data for table ${tableName} (queryKey: ${queryMessage.queryKey}):`,
-                error
-              );
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: queryMessage.id,
-                message: `Failed to fetch data for table: ${tableName}: ${
-                  error instanceof Error ? error.message : String(error)
-                }`,
-              };
-              ws.send(JSON.stringify(errorMsg));
-            }
-          } else {
-            // Handle unknown query keys
+          } catch (error) {
+            console.error(
+              `Error executing query handler for ${queryMessage.queryKey}:`,
+              error
+            );
             const errorMsg: ErrorResponseMessage = {
               type: MessageType.ERROR,
               id: queryMessage.id,
-              message: `Unknown queryKey: ${queryMessage.queryKey}`,
+              message: `Error in query ${queryMessage.queryKey}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
             };
             ws.send(JSON.stringify(errorMsg));
           }
-        } else if (parsedMessage.type === MessageType.MUTATION) {
-          const mutationMessage = parsedMessage as MutationRequestMessage;
-          if (mutationMessage.mutationKey === "incrementCounter") {
-            if (!globalCounterData) {
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: mutationMessage.id,
-                message: "Global counter not found for mutation",
-              };
-              ws.send(JSON.stringify(errorMsg));
-              return;
-            }
-            const newvalue = globalCounterData.value + 1;
-            // Use the Counter type for update consistency
-            const updatedCounterFields: Partial<Counter> = { value: newvalue };
-            await db("counters")
-              .where({ _id: globalCounterData._id })
-              .update(updatedCounterFields);
-            globalCounterData.value = newvalue; // Update in-memory cache
-            const response: DataResponseMessage<Counter> = {
+        } else if (
+          queryMessage.queryKey &&
+          queryMessage.queryKey.startsWith("table_")
+        ) {
+          const tableName = queryMessage.queryKey.substring(
+            "table_".length
+          ) as keyof typeof appSchema;
+          if (!Object.prototype.hasOwnProperty.call(appSchema, tableName)) {
+            const errorMsg: ErrorResponseMessage = {
+              type: MessageType.ERROR,
+              id: queryMessage.id,
+              message: `Unknown table specified in queryKey: ${tableName}`,
+            };
+            ws.send(JSON.stringify(errorMsg));
+            return;
+          }
+          try {
+            const data = await db(tableName).select("*");
+            const response: DataResponseMessage<unknown[]> = {
               type: MessageType.DATA_UPDATE,
-              id: mutationMessage.id,
-              data: globalCounterData,
+              id: queryMessage.id,
+              queryKey: queryMessage.queryKey,
+              data: data,
             };
             ws.send(JSON.stringify(response));
-            broadcastCounterUpdate();
-            await broadcastTableData("counters", db); // Broadcast for admin table view
-          } else if (mutationMessage.mutationKey === "addTextEntry") {
-            try {
-              const args = mutationMessage.args as { content: string };
-              const content = args?.content;
-
-              if (typeof content !== "string") {
-                throw new Error(
-                  "Invalid arguments for addTextEntry: content must be a string."
-                );
-              }
-
-              const newEntryDataToValidate = { content: content.trim() };
-              const validatedEntry = appSchema.text_entries.parse(
-                newEntryDataToValidate
-              ) as TextEntry;
-
-              await db("text_entries").insert(validatedEntry);
-
-              const response: DataResponseMessage<TextEntry> = {
-                type: MessageType.DATA_UPDATE,
-                id: mutationMessage.id,
-                data: validatedEntry,
-              };
-              ws.send(JSON.stringify(response));
-
-              broadcastTextEntriesUpdate();
-              await broadcastTableData("text_entries", db); // Broadcast for admin table view
-            } catch (error) {
-              console.error("Error adding text entry:", error);
-              let errorMessage = "Failed to add text entry.";
-              if (error instanceof z.ZodError) {
-                errorMessage = error.errors
-                  .map((e) => `${e.path.join(".")}: ${e.message}`)
-                  .join(", ");
-              } else if (error instanceof Error) {
-                errorMessage = error.message;
-              } else if (typeof error === "string") {
-                errorMessage = error;
-              }
-              const errorMsg: ErrorResponseMessage = {
-                type: MessageType.ERROR,
-                id: mutationMessage.id,
-                message: errorMessage,
-              };
-              ws.send(JSON.stringify(errorMsg));
-            }
+          } catch (error) {
+            console.error(
+              `Error fetching data for table ${tableName} (queryKey: ${queryMessage.queryKey}):`,
+              error
+            );
+            const errorMsg: ErrorResponseMessage = {
+              type: MessageType.ERROR,
+              id: queryMessage.id,
+              message: `Failed to fetch data for table: ${tableName}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+            ws.send(JSON.stringify(errorMsg));
           }
         } else {
           const errorMsg: ErrorResponseMessage = {
             type: MessageType.ERROR,
-            id: parsedMessage.id,
-            message: `Unknown message type or action: ${parsedMessage.type}`,
+            id: queryMessage.id,
+            message: `Unknown query handler for key: ${queryMessage.queryKey}`,
           };
           ws.send(JSON.stringify(errorMsg));
         }
-      });
+      } else if (parsedMessage.type === MessageType.MUTATION) {
+        const mutationMessage = parsedMessage as MutationRequestMessage;
+        const handler = mutationHandlers.get(mutationMessage.mutationKey);
 
-      ws.on("close", () => {
-        clients.delete(ws);
-        console.log("Client disconnected");
-      });
+        if (handler) {
+          try {
+            const result = await handler(
+              handlerContext,
+              mutationMessage.args || {}
+            );
+            const response: DataResponseMessage<unknown> = {
+              // Type result properly
+              type: MessageType.DATA_UPDATE, // Or a specific success type if defined
+              id: mutationMessage.id,
+              data: result,
+            };
+            ws.send(JSON.stringify(response));
 
-      ws.on("error", (error: Error) => {
-        console.error("WebSocket error:", error.message || error);
-        clients.delete(ws);
-      });
+            // After successful mutation, broadcast updates for affected tables
+            const affected = mutationAffectedTables.get(
+              mutationMessage.mutationKey
+            );
+            if (affected) {
+              for (const tableName of affected) {
+                await broadcastTableData(
+                  tableName as keyof typeof appSchema,
+                  db
+                );
+              }
+            }
+            // Additionally, if the mutation handler itself wants to trigger specific query broadcasts,
+            // it should do so internally (e.g. counter_api.incrementCounter might call a broadcast for "getCounter")
+            // For now, this generic mechanism updates table views in admin.
+          } catch (error) {
+            console.error(
+              `Error executing mutation handler for ${mutationMessage.mutationKey}:`,
+              error
+            );
+            const errorMsg: ErrorResponseMessage = {
+              type: MessageType.ERROR,
+              id: mutationMessage.id,
+              message: `Error in mutation ${mutationMessage.mutationKey}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+            ws.send(JSON.stringify(errorMsg));
+          }
+        } else {
+          const errorMsg: ErrorResponseMessage = {
+            type: MessageType.ERROR,
+            id: mutationMessage.id,
+            message: `Unknown mutation handler for key: ${mutationMessage.mutationKey}`,
+          };
+          ws.send(JSON.stringify(errorMsg));
+        }
+      }
     });
 
-    server.listen(port, () => {
-      console.log(`Server (HTTP and WebSocket) listening on port ${port}`);
+    ws.on("close", () => {
+      clients.delete(ws);
+      console.log("Client disconnected");
     });
-  })
-  .catch((error) => {
-    console.error("Failed to initialize server after DB setup:", error);
-    process.exit(1);
+    ws.on("error", (error: Error) => {
+      console.error("WebSocket error:", error.message || error);
+      clients.delete(ws);
+    });
   });
+
+  server.listen(port, () => {
+    console.log(`Server (HTTP and WebSocket) listening on port ${port}`);
+  });
+}
+
+startServer().catch((error) => {
+  console.error("Failed to start server:", error);
+  process.exit(1);
+});
