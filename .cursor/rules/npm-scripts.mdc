@@ -1,0 +1,19 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# NPM Scripts Guide
+
+This project uses `pnpm` as the package manager. Key scripts defined in [package.json](mdc:package.json) are:
+
+*   `"dev"`: Runs both the frontend Vite development server and the backend Node.js server concurrently.
+    *   Command: `concurrently "vite" "pnpm run dev:server"`
+*   `"dev:server"`: Runs the backend Node.js/Express server using `nodemon` for automatic restarts and `ts-node` to execute TypeScript directly. It specifically uses `tsconfig-server.json` for its TypeScript configuration.
+    *   Command: `cross-env TS_NODE_PROJECT=tsconfig-server.json nodemon --watch server.ts --exec node --loader ts-node/esm server.ts`
+*   `"build"`: Builds both the frontend and potentially the backend (though the backend build step might need further refinement for production).
+    *   Command: `tsc -b && vite build`
+*   `"lint"`: Lints the codebase using ESLint.
+    *   Command: `eslint .`
+*   `"preview"`: Serves the production build of the Vite frontend locally.
+    *   Command: `vite preview`

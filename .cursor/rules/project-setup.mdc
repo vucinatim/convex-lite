@@ -1,0 +1,18 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Project Setup Overview
+
+This project is a full-stack application with:
+
+1.  **Frontend:** A [Vite](mdc:https:/vitejs.dev) + [React](mdc:https:/react.dev) application built with [TypeScript](mdc:https:/www.typescriptlang.org). The main source code is in the `src` directory.
+    *   The Vite configuration is in [vite.config.ts](mdc:vite.config.ts).
+    *   The primary TypeScript configuration for the frontend is [tsconfig.json](mdc:tsconfig.json).
+2.  **Backend:** A [Node.js](mdc:https:/nodejs.org) server using the [Express](mdc:https:/expressjs.com) framework, also built with [TypeScript](mdc:https:/www.typescriptlang.org).
+    *   The main server file is [server.ts](mdc:server.ts).
+    *   The TypeScript configuration for the backend is [tsconfig-server.json](mdc:tsconfig-server.json).
+
+API requests from the frontend to `/api` are proxied to the backend server during development (configured in [vite.config.ts](mdc:vite.config.ts)).
+The project uses `pnpm` as the package manager ([package.json](mdc:package.json)).
