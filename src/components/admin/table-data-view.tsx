@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import { useParams } from "react-router-dom";
 import {
   Table,
@@ -9,92 +9,90 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { schema } from "../../../convex/schema"; // Path should be correct
-import type { AppSchema } from "../../../convex/schema"; // Type-only imports
 import { useQuery } from "../../hooks/use-convex-lite"; // Import useQuery
 
 const TableDataView: React.FC = () => {
   const { tableName } = useParams<{ tableName: string }>();
-  // tableName is string from route param
+  // tableName is string from route param, or undefined if not present
 
   const [columns, setColumns] = useState<string[]>([]);
 
-  useEffect(() => {
-    if (tableName && Object.prototype.hasOwnProperty.call(schema, tableName)) {
-      const tableZodSchema = schema[tableName as keyof AppSchema]; // Safe cast after check
-      if (
-        tableZodSchema &&
-        "shape" in tableZodSchema &&
-        typeof tableZodSchema.shape === "object" &&
-        tableZodSchema.shape !== null
-      ) {
-        setColumns(Object.keys(tableZodSchema.shape));
-      } else {
-        setColumns([]);
-      }
-    } else {
-      setColumns([]);
-    }
+  // Memoize the queryParams object to stabilize its reference
+  const queryParams = useMemo(() => {
+    return tableName ? { tableNameString: tableName } : undefined;
   }, [tableName]);
 
-  const queryKeyForTableData = tableName ? `table_${tableName}` : undefined;
-
-  // Expect raw data as unknown[] from the server for generic table queries
+  // Query for the table data using the new API endpoint
+  // tableName is asserted as string here because the component returns early if it's not.
   const {
-    data: rawData, // Type will be unknown[] | null
+    data: rawData, // Expected to be Record<string, unknown>[] | null
     isLoading,
     error,
-  } = useQuery<unknown[]>(queryKeyForTableData);
+  } = useQuery<Record<string, unknown>[]>(
+    tableName ? "get_admin_table_data" : null, // Query key, or null to prevent query if no tableName
+    queryParams // Use the memoized queryParams object
+  );
+
+  useEffect(() => {
+    if (
+      rawData &&
+      rawData.length > 0 &&
+      typeof rawData[0] === "object" &&
+      rawData[0] !== null
+    ) {
+      setColumns(Object.keys(rawData[0]));
+    } else {
+      // If no data or data is not in expected format, or table is empty
+      setColumns([]);
+    }
+  }, [rawData]);
 
   if (!tableName) {
     return <p className="p-4 text-zinc-400">No table specified.</p>;
   }
 
-  const currentTableSchemaExists = Object.prototype.hasOwnProperty.call(
-    schema,
-    tableName
-  );
-
-  if (isLoading) {
+  // isLoading is true only if tableName is present and query is active
+  if (isLoading && tableName) {
     return <p className="p-4 text-zinc-400">Loading data for {tableName}...</p>;
   }
 
   if (error) {
     return (
       <p className="p-4 text-red-500">
-        Error: {error.message || "Failed to load data"}
+        Error loading data for {tableName}:{" "}
+        {error.message || "Failed to load data"}
       </p>
     );
   }
 
-  if (!currentTableSchemaExists && !isLoading) {
+  // If there's a tableName, but no data, no columns derived, and not loading, and no error yet,
+  // it could be an empty table or data is genuinely null.
+  // The new 'get_admin_table_data' API will throw an error for non-existent tables,
+  // which should be caught by the 'error' state above.
+  if (tableName && !rawData && !isLoading && !error) {
     return (
-      <p className="p-4 text-red-500">
-        Schema not found for table: {tableName}. Or table does not exist.
+      <p className="p-4 text-zinc-400">
+        No data available for table: {tableName}, or table is empty.
       </p>
     );
   }
 
-  // rawData is unknown[] | null. We use optional chaining for length and map.
-  if ((!rawData || rawData.length === 0) && columns.length > 0) {
+  // If rawData is an empty array and columns were not derived (or derived as empty)
+  if (rawData && rawData.length === 0) {
     return (
       <div className="p-4">
         <h2 className="text-xl font-semibold mb-4 text-zinc-100">
           Table: {tableName}
         </h2>
-        <p className="text-zinc-400">No data available for this table.</p>
-        <div className="mt-4 p-4 border border-zinc-700 rounded-md bg-zinc-800">
-          <h3 className="text-lg font-medium text-zinc-200 mb-2">Columns:</h3>
-          <ul className="list-disc list-inside text-zinc-300">
-            {columns.map((col) => (
-              <li key={col}>{col}</li>
-            ))}
-          </ul>
-        </div>
+        <p className="text-zinc-400">
+          No data available for this table (table is empty).
+        </p>
       </div>
     );
   }
 
+  // If we have columns and data, render the table.
+  // This also implies rawData is not null and not empty.
   return (
     <div className="p-6 text-zinc-50">
       <h2 className="text-2xl font-bold mb-6 text-zinc-100">
@@ -118,26 +116,24 @@ const TableDataView: React.FC = () => {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rawData.map((row: unknown, rowIndex: number) => {
-              const recordRow = row as Record<string, unknown>; // Cast unknown row to Record for property access
+            {rawData.map((row: Record<string, unknown>, rowIndex: number) => {
+              // row is already Record<string, unknown> due to useQuery typing
               return (
                 <TableRow
-                  key={(recordRow._id as string) || rowIndex}
+                  key={(row._id as string) || rowIndex} // Assuming _id is primary key
                   className="border-b border-zinc-700 hover:bg-zinc-800 transition-colors"
                 >
                   {columns.map((columnName) => {
-                    const cellValue = recordRow[columnName];
+                    const cellValue = row[columnName];
                     return (
                       <TableCell
-                        key={`${columnName}-${
-                          (recordRow._id as string) || rowIndex
-                        }`}
+                        key={`${columnName}-${(row._id as string) || rowIndex}`}
                         className="p-3 text-zinc-300"
                       >
                         {typeof cellValue === "boolean"
                           ? cellValue
-                            ? "true"
-                            : "false"
+                            ? "True"
+                            : "False"
                           : typeof cellValue === "object" && cellValue !== null
                           ? JSON.stringify(cellValue)
                           : String(cellValue ?? "N/A")}
@@ -149,9 +145,12 @@ const TableDataView: React.FC = () => {
             })}
           </TableBody>
         </Table>
-      ) : isLoading || (!rawData && !error) ? null : (
+      ) : (
+        // This case should ideally be covered by earlier checks (isLoading, error, no data, empty table)
+        // If tableName is present, but we reach here, it implies an unexpected state.
         <p className="text-zinc-400 p-4">
-          No columns defined for this table, or table data could not be loaded.
+          Table data for "{tableName}" could not be displayed. There might be no
+          data or columns.
         </p>
       )}
     </div>

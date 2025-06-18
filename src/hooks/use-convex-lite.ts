@@ -76,22 +76,45 @@ export const useQuery = <TData = unknown, TParams = unknown>(
 
     const unsubscribePromise = subscribeToMessages(
       (message: WebSocketMessage) => {
-        const currentQueryKey = queryDetailsRef.current.queryKey;
-        // const currentParams = queryDetailsRef.current.params; // For more fine-grained updates if needed
+        const { queryKey: currentQueryKey, params: currentParamsUntyped } =
+          queryDetailsRef.current;
 
-        if (
-          isDataResponseMessage<TData>(message) &&
-          message.queryKey === currentQueryKey
-        ) {
-          // This handles general updates for this queryKey
-          // Or specifically for this request: if (message.id === requestId) { setIsLoading(false); }
-          // For simplicity, we assume any DATA_UPDATE for this queryKey updates the data.
-          // If it was the initial load, we should also stop loading.
-          if (message.id === requestId) {
-            setIsLoading(false);
+        if (isDataResponseMessage(message)) {
+          if (message.queryKey !== currentQueryKey) {
+            return;
           }
-          setData(message.data);
-          setError(null);
+
+          if (currentQueryKey === "get_admin_table_data") {
+            const currentParams = currentParamsUntyped as
+              | { tableNameString?: string }
+              | undefined;
+
+            if (message.id === requestId) {
+              setData(message.data as TData);
+              setIsLoading(false);
+              setError(null);
+            } else {
+              const broadcastPayload = message.data as {
+                table: string;
+                data: TData;
+              };
+
+              if (
+                broadcastPayload &&
+                typeof broadcastPayload.table === "string" &&
+                currentParams?.tableNameString === broadcastPayload.table
+              ) {
+                setData(broadcastPayload.data);
+                setError(null);
+              }
+            }
+          } else {
+            setData(message.data as TData);
+            setError(null);
+            if (message.id === requestId) {
+              setIsLoading(false);
+            }
+          }
         } else if (
           isErrorResponseMessage(message) &&
           message.id === requestId

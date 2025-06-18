@@ -2,7 +2,6 @@ import express, { Express, Request, Response } from "express";
 import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
-import { z } from "zod";
 import fs from "fs/promises"; // For dynamic loading
 import path from "path"; // For dynamic loading
 import { fileURLToPath, pathToFileURL } from "url"; // For __dirname equivalent in ESM and pathToFileURL
@@ -13,13 +12,12 @@ import type {
   MutationRequestMessage,
   DataResponseMessage,
   ErrorResponseMessage,
-  // TextEntry, // Removed as unused in server.ts
-  // Counter,   // Removed as unused in server.ts
 } from "../common/web-socket-types.ts";
 import { MessageType } from "../common/web-socket-types.ts";
 
 import { schema as appSchema } from "../convex/schema.ts";
 import db from "./lib/database.ts";
+import { ensureDatabaseSchemaIsUpToDate } from "./lib/schema-initializer.ts"; // Import new function
 
 // Handler Context type to be passed to API functions
 export interface HandlerContext {
@@ -47,49 +45,43 @@ const port: number | string = process.env.PORT || 3001;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-async function loadApiHandlers() {
-  console.log("Loading API handlers...");
-  const apiDir = path.resolve(__dirname, "../convex/api");
+async function loadApiHandlersFromDirectory(dirPath: string) {
   try {
-    const files = await fs.readdir(apiDir);
+    const files = await fs.readdir(dirPath);
     for (const file of files) {
       if (file.endsWith(".ts") || file.endsWith(".js")) {
-        // .js for compiled output if any
-        const modulePath = path.join(apiDir, file);
+        const modulePath = path.join(dirPath, file);
         try {
-          // Use pathToFileURL for dynamic imports in ESM
           const module = await import(pathToFileURL(modulePath).href);
           for (const exportName in module) {
             if (typeof module[exportName] === "function") {
               const handler = module[exportName];
-              // Heuristic: functions starting with get/list are queries, others mutations
               if (
                 exportName.startsWith("get") ||
                 exportName.startsWith("list")
               ) {
                 queryHandlers.set(exportName, handler);
                 console.log(
-                  `Registered query handler: ${exportName} from ${file}`
+                  `Registered query handler: ${exportName} from ${path.relative(
+                    path.resolve(__dirname, ".."),
+                    modulePath
+                  )}`
                 );
               } else {
-                // Assume it's a mutation if not explicitly a query by name
-                // More robust would be explicit wrapping like Convex.query/mutation
                 mutationHandlers.set(exportName, handler);
                 console.log(
-                  `Registered mutation handler: ${exportName} from ${file}`
+                  `Registered mutation handler: ${exportName} from ${path.relative(
+                    path.resolve(__dirname, ".."),
+                    modulePath
+                  )}`
                 );
 
-                // Check for associated affectedTables metadata
-                // Convention: export const affectedTablesByApiFileName = { mutationName: ['table'] }
-                // Or more simply: export const affectedTables_mutationName = ['table']
-                // For now, let's look for a related export like 'affectedTablesByCounterApi'
-                // and then pick the specific mutation key from it.
                 const baseName = path
                   .basename(file, path.extname(file))
-                  .replace(/_api$/, ""); // e.g., "counter" or "text_entries"
+                  .replace(/_api$/, "");
                 const capitalizedBaseName =
-                  baseName.charAt(0).toUpperCase() + baseName.slice(1); // e.g., "Counter" or "TextEntries"
-                const metadataExportName = `affectedTablesBy${capitalizedBaseName}Api`; // e.g. affectedTablesByCounterApi
+                  baseName.charAt(0).toUpperCase() + baseName.slice(1);
+                const metadataExportName = `affectedTablesBy${capitalizedBaseName}Api`;
                 if (
                   module[metadataExportName] &&
                   module[metadataExportName][exportName]
@@ -118,129 +110,37 @@ async function loadApiHandlers() {
       }
     }
   } catch (err) {
-    console.error("Error reading API directory:", err);
-    // Decide if server should start if handlers can't be loaded
+    // If a directory doesn't exist (e.g., admin on a branch without it), log and continue
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code: string }).code === "ENOENT"
+    ) {
+      console.warn(`API handler directory not found: ${dirPath}. Skipping.`);
+    } else {
+      console.error(`Error reading API directory ${dirPath}:`, err);
+    }
   }
+}
+
+async function loadApiHandlers() {
+  console.log("Loading API handlers...");
+  const apiDir = path.resolve(__dirname, "../convex/api");
+  const adminApiDir = path.resolve(__dirname, "../convex/admin");
+
+  await loadApiHandlersFromDirectory(apiDir);
+  await loadApiHandlersFromDirectory(adminApiDir);
+
   console.log("API handlers loading complete.");
   console.log("Query Handlers:", Array.from(queryHandlers.keys()));
   console.log("Mutation Handlers:", Array.from(mutationHandlers.keys()));
   console.log("Mutation Affected Tables:", mutationAffectedTables);
 }
 
-async function initializeDatabaseSchema() {
-  console.log("Initializing database schema...");
-  try {
-    for (const [tableName, zodSchema] of Object.entries(appSchema)) {
-      const tableExists = await db.schema.hasTable(tableName);
-      if (!tableExists) {
-        console.log(`Creating table: ${tableName}`);
-        await db.schema.createTable(tableName, (table) => {
-          if (typeof zodSchema.shape !== "function" && zodSchema.shape) {
-            for (const [fieldName, fieldSchemaUntyped] of Object.entries(
-              zodSchema.shape
-            )) {
-              const fieldSchema = fieldSchemaUntyped as z.ZodTypeAny;
-              let columnBuilder;
-              const zType = fieldSchema._def.typeName;
-
-              // Handle specific fields first
-              if (fieldName === "_id") {
-                columnBuilder = table.string("_id").primary(); // _id is primary key
-              } else if (
-                fieldName === "_createdAt" ||
-                fieldName === "_updatedAt"
-              ) {
-                columnBuilder = table.bigInteger(fieldName).notNullable(); // Timestamps as BIGINT, not nullable
-              } else if (zType === "ZodString") {
-                columnBuilder = table.string(fieldName);
-              } else if (zType === "ZodNumber") {
-                // Keep existing logic for other number fields (e.g., counter value)
-                if (
-                  fieldName.includes("At") || // This might conflict if we have other 'At' fields not timestamps
-                  fieldName.includes("Timestamp")
-                ) {
-                  columnBuilder = table.bigInteger(fieldName);
-                } else {
-                  columnBuilder = table.integer(fieldName);
-                }
-              } else if (zType === "ZodBoolean") {
-                columnBuilder = table.boolean(fieldName);
-              } else if (zType === "ZodOptional" || zType === "ZodNullable") {
-                let innerTypeName = "unknown";
-                if (
-                  fieldSchema._def &&
-                  "innerType" in fieldSchema._def &&
-                  fieldSchema._def.innerType &&
-                  fieldSchema._def.innerType._def &&
-                  "typeName" in fieldSchema._def.innerType._def
-                ) {
-                  innerTypeName = fieldSchema._def.innerType._def
-                    .typeName as string;
-                }
-                if (innerTypeName === "ZodString")
-                  columnBuilder = table.string(fieldName);
-                else if (innerTypeName === "ZodNumber")
-                  columnBuilder =
-                    table.integer(
-                      fieldName
-                    ); // Could also be bigInteger based on inner type nature
-                else {
-                  console.warn(
-                    `Unhandled optional/nullable inner type ${innerTypeName} for ${fieldName} in ${tableName}`
-                  );
-                  continue;
-                }
-                // Optional/nullable fields by definition don't get .notNullable() here
-              } else {
-                console.warn(
-                  `Unhandled Zod type ${zType} for ${fieldName} in ${tableName}`
-                );
-                continue;
-              }
-
-              // Apply notNullable for non-optional/nullable fields, excluding special fields handled above
-              if (
-                columnBuilder &&
-                fieldName !== "_id" && // Already handled
-                fieldName !== "_createdAt" && // Already handled
-                fieldName !== "_updatedAt" && // Already handled
-                zType !== "ZodOptional" &&
-                zType !== "ZodNullable"
-              ) {
-                columnBuilder.notNullable();
-              }
-
-              // Apply defaultTo if specified in Zod schema, but _createdAt and _updatedAt defaults are app-level
-              if (
-                columnBuilder &&
-                fieldSchema._def.defaultValue !== undefined &&
-                typeof fieldSchema._def.defaultValue !== "function" && // Knex defaultTo needs a literal
-                fieldName !== "_createdAt" && // Application logic handles default via Zod
-                fieldName !== "_updatedAt" // Application logic handles default via Zod
-              ) {
-                columnBuilder.defaultTo(fieldSchema._def.defaultValue);
-              }
-            }
-          } else {
-            console.warn(
-              `Schema for table ${tableName} does not appear to be a Zod object with a shape.`
-            );
-          }
-        });
-        console.log(`Table ${tableName} created.`);
-      } else {
-        console.log(`Table ${tableName} already exists.`);
-      }
-    }
-    console.log("Database schema initialization complete.");
-  } catch (error) {
-    console.error("Error initializing database schema:", error);
-    process.exit(1);
-  }
-}
-
 async function startServer() {
-  await initializeDatabaseSchema();
+  // await initializeDatabaseSchema(); // Old call
+  await ensureDatabaseSchemaIsUpToDate(db, appSchema); // New call
   await loadApiHandlers(); // Load handlers after DB is ready
 
   app.use(cors());
@@ -254,32 +154,6 @@ async function startServer() {
   const wss = new WebSocketServer({ server });
 
   const clients = new Set<WebSocket>();
-
-  const broadcastTableData = async (
-    tableName: keyof typeof appSchema,
-    database: typeof db
-  ) => {
-    try {
-      const data = await database(tableName).select("*");
-      const queryKeyForTable = `table_${tableName}`;
-      const message: DataResponseMessage<unknown[]> = {
-        type: MessageType.DATA_UPDATE,
-        queryKey: queryKeyForTable,
-        data: data,
-      };
-      const messageString = JSON.stringify(message);
-      clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-          client.send(messageString);
-        }
-      });
-      console.log(
-        `Broadcasted data update for table: ${tableName} to key ${queryKeyForTable}`
-      );
-    } catch (error) {
-      console.error(`Error broadcasting table data for ${tableName}:`, error);
-    }
-  };
 
   const broadcastQueryUpdateForHandler = <TData>(
     queryKey: string,
@@ -358,45 +232,6 @@ async function startServer() {
             };
             ws.send(JSON.stringify(errorMsg));
           }
-        } else if (
-          queryMessage.queryKey &&
-          queryMessage.queryKey.startsWith("table_")
-        ) {
-          const tableName = queryMessage.queryKey.substring(
-            "table_".length
-          ) as keyof typeof appSchema;
-          if (!Object.prototype.hasOwnProperty.call(appSchema, tableName)) {
-            const errorMsg: ErrorResponseMessage = {
-              type: MessageType.ERROR,
-              id: queryMessage.id,
-              message: `Unknown table specified in queryKey: ${tableName}`,
-            };
-            ws.send(JSON.stringify(errorMsg));
-            return;
-          }
-          try {
-            const data = await db(tableName).select("*");
-            const response: DataResponseMessage<unknown[]> = {
-              type: MessageType.DATA_UPDATE,
-              id: queryMessage.id,
-              queryKey: queryMessage.queryKey,
-              data: data,
-            };
-            ws.send(JSON.stringify(response));
-          } catch (error) {
-            console.error(
-              `Error fetching data for table ${tableName} (queryKey: ${queryMessage.queryKey}):`,
-              error
-            );
-            const errorMsg: ErrorResponseMessage = {
-              type: MessageType.ERROR,
-              id: queryMessage.id,
-              message: `Failed to fetch data for table: ${tableName}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            };
-            ws.send(JSON.stringify(errorMsg));
-          }
         } else {
           const errorMsg: ErrorResponseMessage = {
             type: MessageType.ERROR,
@@ -429,10 +264,25 @@ async function startServer() {
             );
             if (affected) {
               for (const tableName of affected) {
-                await broadcastTableData(
-                  tableName as keyof typeof appSchema,
-                  db
-                );
+                // Fetch the updated data for the table
+                try {
+                  const tableData = await db
+                    .select()
+                    .from(appSchema[tableName as keyof typeof appSchema]);
+                  // Broadcast using the new general admin table data query key
+                  broadcastQueryUpdateForHandler("get_admin_table_data", {
+                    table: tableName,
+                    data: tableData,
+                  });
+                  console.log(
+                    `Broadcasted admin update for table: ${tableName} via get_admin_table_data`
+                  );
+                } catch (broadcastError) {
+                  console.error(
+                    `Error fetching or broadcasting data for affected table ${tableName}:`,
+                    broadcastError
+                  );
+                }
               }
             }
             // Additionally, if the mutation handler itself wants to trigger specific query broadcasts,

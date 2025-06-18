@@ -1,106 +1,109 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import type { Knex } from "knex";
-import type { AppSchema, Counter } from "../schema"; // Assuming Counter type is from the main schema
-import type { HandlerContext } from "../../server/server"; // Corrected import path
+import { eq } from "drizzle-orm";
+import { countersTable } from "../schema.ts";
+import type { HandlerContext } from "../../server/server";
 
-// interface HandlerContext { // Removed, will use imported type
-//   db: Knex;
-//   appSchema: AppSchema; // Pass the whole schema for now
-//   // We can add auth, storage, etc. to context later
-// }
+// Define the Counter type based on Drizzle's select schema for countersTable
+type Counter = typeof countersTable.$inferSelect;
 
-// In-memory cache for the global counter data, similar to how it was in server.ts
-// This is a simplification for this example. Ideally, this state management would be more robust
-// or directly rely on fetching from DB for every query if performance allows.
+// In-memory cache for the global counter.
+// Mutations will update this to maintain consistency if used.
 let globalCounterDataInMemory: Counter | null = null;
+const GLOBAL_COUNTER_ID = "the_one_and_only_counter"; // A fixed, unique ID for the singleton counter
 
-async function ensureGlobalCounterInApi(
-  db: Knex,
-  appSchemaObj: AppSchema
-): Promise<Counter> {
-  if (globalCounterDataInMemory) {
-    // Optionally, re-validate with DB if stale data is a concern for a specific use-case
-    // For this example, we assume the in-memory is synced by mutations
-    const freshCounter = (await db("counters")
-      .where({ _id: globalCounterDataInMemory._id })
-      .first()) as Counter | undefined;
-    if (freshCounter) {
-      globalCounterDataInMemory = freshCounter;
-      return globalCounterDataInMemory;
-    }
-    // If not found (e.g. deleted from DB manually), reset and re-create
-    globalCounterDataInMemory = null;
-  }
+/**
+ * Ensures the global counter document exists in the database and returns it.
+ * Manages an in-memory cache for the counter.
+ */
+async function ensureGlobalCounter(db: HandlerContext["db"]): Promise<Counter> {
+  // Option 1: Always fetch from DB for maximum consistency (cache updated after fetch/create)
+  let counter = await db
+    .select()
+    .from(countersTable)
+    .where(eq(countersTable._id, GLOBAL_COUNTER_ID))
+    .get();
 
-  // If not in memory or reset, try to fetch or create
-  const existing = (await db("counters")
-    .where({ name: "globalCounter" })
-    .first()) as Counter | undefined;
-  if (existing) {
-    globalCounterDataInMemory = existing;
-  } else {
-    const newCounter = appSchemaObj.counters.parse({
-      name: "globalCounter",
+  // Option 2: Use in-memory cache if available (uncomment if this behavior is preferred)
+  // if (globalCounterDataInMemory && !counter) { // Or some logic to refresh cache
+  //   counter = globalCounterDataInMemory;
+  // } else if (counter) {
+  //   globalCounterDataInMemory = counter; // Update cache if fetched
+  // }
+
+  if (!counter) {
+    const now = Date.now();
+    // Define the data for the new counter record using Drizzle's insert type
+    const newCounterData: typeof countersTable.$inferInsert = {
+      _id: GLOBAL_COUNTER_ID,
+      name: "Global Counter", // Provide the non-null name
       value: 0,
-    });
-    await db("counters").insert(newCounter);
-    globalCounterDataInMemory = newCounter;
+      _createdAt: now,
+      _updatedAt: now,
+    };
+    await db.insert(countersTable).values(newCounterData);
+
+    // Re-fetch the counter after insertion to ensure we have the definitive state from the DB
+    const fetchedCounter = await db
+      .select()
+      .from(countersTable)
+      .where(eq(countersTable._id, GLOBAL_COUNTER_ID))
+      .get();
+    if (!fetchedCounter) {
+      throw new Error(
+        "Failed to create or retrieve the global counter after attempting insert."
+      );
+    }
+    counter = fetchedCounter;
   }
-  if (!globalCounterDataInMemory) {
-    // This case should ideally not be reached if parse and insert are successful
-    throw new Error("Failed to ensure global counter in API.");
-  }
-  console.log(
-    "Global counter ensured/retrieved in API:",
-    globalCounterDataInMemory
-  );
-  return globalCounterDataInMemory;
+
+  globalCounterDataInMemory = counter; // Update/set the in-memory cache
+  return counter;
 }
 
 // Query to get the current counter value
 export async function getCounter(
-  { db, appSchema: appSchemaObj }: HandlerContext,
-  _args: Record<string, unknown> // Explicitly type as an object with unknown properties
+  { db }: HandlerContext, // Removed appSchema: appSchemaObj as it's not directly used
+  _args: Record<string, unknown>
 ): Promise<Counter> {
-  // Uses the local ensure function which maintains an in-memory copy for quick reads
-  // and falls back to DB if not present.
-  return await ensureGlobalCounterInApi(db, appSchemaObj);
+  return await ensureGlobalCounter(db);
 }
 
 // Mutation to increment the counter
 export async function incrementCounter(
-  { db, appSchema: appSchemaObj, broadcastQueryUpdate }: HandlerContext,
-  _args: Record<string, unknown> // Explicitly type as an object with unknown properties
+  { db, broadcastQueryUpdate }: HandlerContext, // Removed appSchema: appSchemaObj
+  _args: Record<string, unknown>
 ): Promise<Counter> {
-  const currentCounter = await ensureGlobalCounterInApi(db, appSchemaObj);
+  const currentCounter = await ensureGlobalCounter(db);
 
   const newValue = currentCounter.value + 1;
   const newUpdatedAt = Date.now(); // Get current timestamp for _updatedAt
 
-  await db("counters").where({ _id: currentCounter._id }).update({
-    value: newValue,
-    _updatedAt: newUpdatedAt, // Explicitly set _updatedAt
-  });
+  // Use Drizzle's update syntax
+  await db
+    .update(countersTable)
+    .set({ value: newValue, _updatedAt: newUpdatedAt })
+    .where(eq(countersTable._id, currentCounter._id));
 
-  // Create a new object for the updated counter to reflect the change for the return value
-  // and to update the in-memory cache with a new reference if it's an object.
+  console.log("Counter incremented in API to:", newValue);
+
+  // Create a new object for the updated counter to reflect the change
   const updatedCounter: Counter = {
     ...currentCounter,
     value: newValue,
-    _updatedAt: newUpdatedAt, // Ensure the returned object and in-memory cache also have the new _updatedAt
+    _updatedAt: newUpdatedAt,
   };
-  globalCounterDataInMemory = updatedCounter;
+
+  globalCounterDataInMemory = updatedCounter; // Update in-memory cache
 
   console.log("Counter incremented in API to:", updatedCounter.value);
 
-  // Broadcast the updated counter data for the "getCounter" queryKey
   broadcastQueryUpdate("getCounter", updatedCounter);
 
   return updatedCounter;
 }
 
 // Function to signal which tables this API file might affect (for broadcasting)
-// This is a simple convention for now.
+// This convention remains the same.
 export const affectedTablesByCounterApi = {
   incrementCounter: ["counters"],
   // getCounter doesn't modify, so no entry or empty array

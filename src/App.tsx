@@ -2,7 +2,7 @@ import { useState } from "react";
 import reactLogo from "./assets/react.svg";
 import viteLogo from "/vite.svg";
 import { useQuery, useMutation } from "./hooks/use-convex-lite";
-import type { Counter, TextEntry } from "../common/web-socket-types.ts";
+import type { countersTable, textEntriesTable } from "convex/schema";
 
 function App() {
   // Counter Showcase
@@ -10,13 +10,13 @@ function App() {
     data: counterData,
     isLoading: isLoadingCounter,
     error: counterError,
-  } = useQuery<Counter>("getCounter");
+  } = useQuery<typeof countersTable.$inferSelect>("getCounter");
 
   const {
     mutate: incrementCounter,
     isLoading: isIncrementing,
     error: incrementError,
-  } = useMutation<Counter, void>("incrementCounter");
+  } = useMutation<typeof countersTable.$inferSelect, void>("incrementCounter");
 
   const handleIncrement = async () => {
     try {
@@ -32,13 +32,15 @@ function App() {
     data: textEntriesData,
     isLoading: isLoadingTextEntries,
     error: textEntriesError,
-  } = useQuery<TextEntry[]>("getTextEntries");
+  } = useQuery<(typeof textEntriesTable.$inferSelect)[]>("getTextEntries");
 
   const {
     mutate: addTextEntry,
     isLoading: isAddingText,
     error: addTextError,
-  } = useMutation<TextEntry, { content: string }>("addTextEntry");
+  } = useMutation<typeof textEntriesTable.$inferSelect, { content: string }>(
+    "addTextEntry"
+  );
 
   const handleAddText = async () => {
     if (!textInput.trim()) return; // Prevent empty submissions

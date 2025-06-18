@@ -1,5 +1,3 @@
-import type { schema, Infer } from "../convex/schema"; // Import schema and Infer
-
 export const MessageType = {
   QUERY: "QUERY",
   MUTATION: "MUTATION",
@@ -8,12 +6,6 @@ export const MessageType = {
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
-
-// Define specific data types based on your schema
-export type Counter = Infer<typeof schema.counters>;
-export type Document = Infer<typeof schema.documents>;
-export type Todo = Infer<typeof schema.todos>;
-export type TextEntry = Infer<typeof schema.text_entries>; // Define and export TextEntry
 
 export interface BaseMessage {
   type: MessageType;
