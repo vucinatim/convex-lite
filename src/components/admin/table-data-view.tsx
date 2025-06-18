@@ -10,37 +10,18 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { schema } from "../../../convex/schema"; // Path should be correct
-import type { AppSchema, Infer } from "../../../convex/schema"; // Type-only imports
-
-// Placeholder for fetching data - we will replace this with actual data fetching
-const fetchTableData = async (
-  tableName: keyof AppSchema
-): Promise<Infer<AppSchema[typeof tableName]>[]> => {
-  console.log(`Fetching data for ${tableName}...`);
-  // Simulate API call
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  // In a real app, this would be an API call to the backend, e.g., /api/tables/:tableName
-  // For now, returning empty array or mock data based on schema
-  if (tableName === "counters" && schema.counters) {
-    // Example: return a mock counter
-    return [{ _id: "mock_counter_1", name: "Global", value: 100 }] as Infer<
-      typeof schema.counters
-    >[];
-  }
-  return [];
-};
+import type { AppSchema } from "../../../convex/schema"; // Type-only imports
+import { useQuery } from "../../hooks/use-convex-lite"; // Import useQuery
 
 const TableDataView: React.FC = () => {
-  const { tableName } = useParams<{ tableName: keyof AppSchema }>();
-  const [data, setData] = useState<Infer<AppSchema[keyof AppSchema]>[]>([]);
+  const { tableName } = useParams<{ tableName: string }>();
+  // tableName is string from route param
+
   const [columns, setColumns] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (tableName && schema[tableName]) {
-      const tableZodSchema = schema[tableName];
-      // Infer columns from Zod schema keys
+    if (tableName && Object.prototype.hasOwnProperty.call(schema, tableName)) {
+      const tableZodSchema = schema[tableName as keyof AppSchema]; // Safe cast after check
       if (
         tableZodSchema &&
         "shape" in tableZodSchema &&
@@ -49,52 +30,53 @@ const TableDataView: React.FC = () => {
       ) {
         setColumns(Object.keys(tableZodSchema.shape));
       } else {
-        setColumns([]); // Not an object schema or no shape
+        setColumns([]);
       }
-
-      setIsLoading(true);
-      setError(null);
-      fetchTableData(tableName)
-        .then(setData)
-        .catch((err) => {
-          console.error("Error fetching table data:", err);
-          setError(`Failed to load data for table: ${tableName}`);
-        })
-        .finally(() => setIsLoading(false));
-    } else if (tableName) {
-      setError(`Unknown table: ${tableName}`);
+    } else {
       setColumns([]);
-      setData([]);
     }
   }, [tableName]);
 
+  const queryKeyForTableData = tableName ? `table_${tableName}` : undefined;
+
+  // Expect raw data as unknown[] from the server for generic table queries
+  const {
+    data: rawData, // Type will be unknown[] | null
+    isLoading,
+    error,
+  } = useQuery<unknown[]>(queryKeyForTableData);
+
   if (!tableName) {
-    return (
-      <p className="p-4 text-zinc-400">
-        Select a table from the sidebar to view its data.
-      </p>
-    );
+    return <p className="p-4 text-zinc-400">No table specified.</p>;
   }
 
-  const currentTableSchema = tableName ? schema[tableName] : null;
+  const currentTableSchemaExists = Object.prototype.hasOwnProperty.call(
+    schema,
+    tableName
+  );
 
   if (isLoading) {
     return <p className="p-4 text-zinc-400">Loading data for {tableName}...</p>;
   }
 
   if (error) {
-    return <p className="p-4 text-red-500">{error}</p>;
-  }
-
-  if (!currentTableSchema) {
     return (
       <p className="p-4 text-red-500">
-        Schema not found for table: {tableName}.
+        Error: {error.message || "Failed to load data"}
       </p>
     );
   }
 
-  if (data.length === 0 && columns.length > 0) {
+  if (!currentTableSchemaExists && !isLoading) {
+    return (
+      <p className="p-4 text-red-500">
+        Schema not found for table: {tableName}. Or table does not exist.
+      </p>
+    );
+  }
+
+  // rawData is unknown[] | null. We use optional chaining for length and map.
+  if ((!rawData || rawData.length === 0) && columns.length > 0) {
     return (
       <div className="p-4">
         <h2 className="text-xl font-semibold mb-4 text-zinc-100">
@@ -118,7 +100,7 @@ const TableDataView: React.FC = () => {
       <h2 className="text-2xl font-bold mb-6 text-zinc-100">
         Table: {tableName}
       </h2>
-      {columns.length > 0 ? (
+      {columns.length > 0 && rawData && rawData.length > 0 ? (
         <Table className="border border-zinc-700">
           <TableCaption className="text-zinc-400 py-4">
             A list of records from the "{tableName}" table.
@@ -136,32 +118,40 @@ const TableDataView: React.FC = () => {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.map((row, rowIndex) => (
-              <TableRow
-                key={row._id || rowIndex}
-                className="border-b border-zinc-700 hover:bg-zinc-800 transition-colors"
-              >
-                {columns.map((columnName) => (
-                  <TableCell
-                    key={`${columnName}-${row._id || rowIndex}`}
-                    className="p-3 text-zinc-300"
-                  >
-                    {typeof row[columnName as keyof typeof row] === "boolean"
-                      ? row[columnName as keyof typeof row]
-                        ? "true"
-                        : "false"
-                      : typeof row[columnName as keyof typeof row] === "object"
-                      ? JSON.stringify(row[columnName as keyof typeof row])
-                      : String(row[columnName as keyof typeof row] ?? "N/A")}
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))}
+            {rawData.map((row: unknown, rowIndex: number) => {
+              const recordRow = row as Record<string, unknown>; // Cast unknown row to Record for property access
+              return (
+                <TableRow
+                  key={(recordRow._id as string) || rowIndex}
+                  className="border-b border-zinc-700 hover:bg-zinc-800 transition-colors"
+                >
+                  {columns.map((columnName) => {
+                    const cellValue = recordRow[columnName];
+                    return (
+                      <TableCell
+                        key={`${columnName}-${
+                          (recordRow._id as string) || rowIndex
+                        }`}
+                        className="p-3 text-zinc-300"
+                      >
+                        {typeof cellValue === "boolean"
+                          ? cellValue
+                            ? "true"
+                            : "false"
+                          : typeof cellValue === "object" && cellValue !== null
+                          ? JSON.stringify(cellValue)
+                          : String(cellValue ?? "N/A")}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
-      ) : (
-        <p className="text-zinc-400">
-          No columns defined for this table or table schema is not an object.
+      ) : isLoading || (!rawData && !error) ? null : (
+        <p className="text-zinc-400 p-4">
+          No columns defined for this table, or table data could not be loaded.
         </p>
       )}
     </div>

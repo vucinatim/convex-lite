@@ -12,6 +12,8 @@ import type {
   ErrorResponseMessage,
   TextEntry, // Add TextEntry type import if not already there from common types
   Counter, // Also from common types
+  // Document, // Removed as unused for now
+  // Todo,     // Removed as unused for now
 } from "../common/web-socket-types.ts";
 import { MessageType } from "../common/web-socket-types.ts";
 
@@ -189,6 +191,34 @@ initializeDatabaseSchema()
       }
     };
 
+    // New generic function to broadcast data for any table
+    const broadcastTableData = async (
+      tableName: keyof typeof appSchema,
+      database: typeof db
+    ) => {
+      try {
+        const data = await database(tableName).select("*"); // Fetch all data
+        const queryKeyForTable = `table_${tableName}`;
+        const message: DataResponseMessage<unknown[]> = {
+          // Data is an array of records
+          type: MessageType.DATA_UPDATE,
+          queryKey: queryKeyForTable,
+          data: data,
+        };
+        const messageString = JSON.stringify(message);
+        clients.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(messageString);
+          }
+        });
+        console.log(
+          `Broadcasted data update for table: ${tableName} to key ${queryKeyForTable}`
+        );
+      } catch (error) {
+        console.error(`Error broadcasting table data for ${tableName}:`, error);
+      }
+    };
+
     wss.on("connection", (ws: WebSocket) => {
       console.log("Client connected via WebSocket");
       clients.add(ws);
@@ -250,6 +280,53 @@ initializeDatabaseSchema()
               };
               ws.send(JSON.stringify(errorMsg));
             }
+          } else if (
+            queryMessage.queryKey &&
+            queryMessage.queryKey.startsWith("table_")
+          ) {
+            const tableName = queryMessage.queryKey.substring(
+              "table_".length
+            ) as keyof typeof appSchema;
+            if (!Object.prototype.hasOwnProperty.call(appSchema, tableName)) {
+              const errorMsg: ErrorResponseMessage = {
+                type: MessageType.ERROR,
+                id: queryMessage.id,
+                message: `Unknown table specified in queryKey: ${tableName}`,
+              };
+              ws.send(JSON.stringify(errorMsg));
+              return;
+            }
+            try {
+              const data = await db(tableName).select("*");
+              const response: DataResponseMessage<unknown[]> = {
+                type: MessageType.DATA_UPDATE,
+                id: queryMessage.id,
+                queryKey: queryMessage.queryKey, // Respond to the specific table_X key
+                data: data,
+              };
+              ws.send(JSON.stringify(response));
+            } catch (error) {
+              console.error(
+                `Error fetching data for table ${tableName} (queryKey: ${queryMessage.queryKey}):`,
+                error
+              );
+              const errorMsg: ErrorResponseMessage = {
+                type: MessageType.ERROR,
+                id: queryMessage.id,
+                message: `Failed to fetch data for table: ${tableName}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              };
+              ws.send(JSON.stringify(errorMsg));
+            }
+          } else {
+            // Handle unknown query keys
+            const errorMsg: ErrorResponseMessage = {
+              type: MessageType.ERROR,
+              id: queryMessage.id,
+              message: `Unknown queryKey: ${queryMessage.queryKey}`,
+            };
+            ws.send(JSON.stringify(errorMsg));
           }
         } else if (parsedMessage.type === MessageType.MUTATION) {
           const mutationMessage = parsedMessage as MutationRequestMessage;
@@ -277,6 +354,7 @@ initializeDatabaseSchema()
             };
             ws.send(JSON.stringify(response));
             broadcastCounterUpdate();
+            await broadcastTableData("counters", db); // Broadcast for admin table view
           } else if (mutationMessage.mutationKey === "addTextEntry") {
             try {
               const args = mutationMessage.args as { content: string };
@@ -303,6 +381,7 @@ initializeDatabaseSchema()
               ws.send(JSON.stringify(response));
 
               broadcastTextEntriesUpdate();
+              await broadcastTableData("text_entries", db); // Broadcast for admin table view
             } catch (error) {
               console.error("Error adding text entry:", error);
               let errorMessage = "Failed to add text entry.";
