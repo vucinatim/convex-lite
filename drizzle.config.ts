@@ -1,7 +1,7 @@
 import type { Config } from "drizzle-kit";
 
 export default {
-  schema: "./convex/schema.ts", // Pointing to our existing schema file, which we'll adapt
+  schema: "./convex/_schema.ts", // Pointing to our existing schema file, which we'll adapt
   out: "./drizzle/migrations", // Standard output directory for migrations
   dialect: "sqlite", // Specify SQLite dialect
   dbCredentials: {

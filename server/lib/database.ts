@@ -1,7 +1,7 @@
 import { drizzle, BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import * as schemaModule from "../../convex/schema.ts"; // We will define Drizzle table schemas here
-import type { AppSchema } from "../../convex/schema.ts";
+import * as schemaModule from "../../convex/_schema.ts"; // We will define Drizzle table schemas here
+import type { AppSchema } from "../../convex/_schema.ts";
 
 // Initialize better-sqlite3
 // The path to the SQLite database file is now managed by drizzle.config.ts for migrations,

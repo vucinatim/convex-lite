@@ -1,18 +1,31 @@
 import { sql, eq } from "drizzle-orm";
-import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
+import type { SQLiteColumn, SQLiteTable } from "drizzle-orm/sqlite-core";
 import {
   sqliteTable,
   text,
   integer as drizzleInteger,
 } from "drizzle-orm/sqlite-core";
-import type { AppSchema } from "../../convex/schema";
+import type { AppSchema } from "../../convex/_schema";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { type schema as appSchemaDefinition } from "../../convex/schema"; // For DB type
+import { type schema as appSchemaDefinition } from "../../convex/_schema";
+
+// THE FIX - Step 1: Declare the symbol as a constant.
+const drizzleColumnsSymbol = Symbol.for("drizzle:Columns");
+
+// A helper type for a Drizzle table that is guaranteed to have the internal symbol.
+type DrizzleTableWithColumns = SQLiteTable & {
+  [drizzleColumnsSymbol]: Record<string, SQLiteColumn>;
+};
+
+// Helper function to check if an object is a Drizzle table
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isDrizzleTable(obj: any): obj is DrizzleTableWithColumns {
+  return obj && typeof obj === "object" && drizzleColumnsSymbol in obj;
+}
 
 interface FieldDefinition {
-  dbType: string; // Changed from zodType
+  dbType: string;
   isNullable: boolean;
-  // We might add defaultValue, specific dbType later if needed for more granular comparison
 }
 
 interface TableDefinition {
@@ -23,28 +36,23 @@ interface SchemaSnapshot {
   [tableName: string]: TableDefinition;
 }
 
-/**
- * Generates a structured snapshot of the application schema for comparison.
- */
 function generateSchemaSnapshot(currentAppSchema: AppSchema): string {
   const snapshot: SchemaSnapshot = {};
 
-  for (const [tableName, drizzleTable] of Object.entries(currentAppSchema)) {
-    // console.log(`Processing table: ${tableName}`, drizzleTable); // Debug log from previous step, can be kept or removed
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const columnsFromSymbol = (drizzleTable as any)[
-      Symbol.for("drizzle:Columns")
-    ] as Record<string, SQLiteColumn>;
-
-    if (!columnsFromSymbol) {
-      console.error(
-        `Skipping table ${tableName} in generateSchemaSnapshot: Cannot find Symbol.for('drizzle:Columns'). DrizzleTable object:`,
-        drizzleTable
+  for (const [tableName, tableOrRelation] of Object.entries(currentAppSchema)) {
+    // Check if the property is a valid Drizzle table.
+    if (!isDrizzleTable(tableOrRelation)) {
+      console.log(
+        `Skipping non-table property in schema snapshot: ${tableName}`
       );
       continue;
     }
+
+    // THE FIX - Step 2: Use the constant to access the property.
+    // The type guard `isDrizzleTable` now makes this access type-safe.
+    const columns = tableOrRelation[drizzleColumnsSymbol];
     snapshot[tableName] = {};
-    const columns = columnsFromSymbol;
+
     for (const column of Object.values(columns)) {
       snapshot[tableName][column.name] = {
         dbType: column.getSQLType(),
@@ -52,6 +60,7 @@ function generateSchemaSnapshot(currentAppSchema: AppSchema): string {
       };
     }
   }
+
   const sortedSnapshot: SchemaSnapshot = {};
   Object.keys(snapshot)
     .sort()
@@ -67,18 +76,22 @@ function generateSchemaSnapshot(currentAppSchema: AppSchema): string {
   return JSON.stringify(sortedSnapshot, null, 2);
 }
 
-/**
- * Creates database tables based on the provided Drizzle schema if they don't already exist.
- * This function is intended to be called when the schema is known to be new or matching the database.
- * It does not handle schema migrations or mismatches.
- */
 async function createTablesFromSchema(
   db: BetterSQLite3Database<typeof appSchemaDefinition>,
   appSchema: AppSchema
 ) {
   console.log("Executing createTablesFromSchema...");
   try {
-    for (const [tableName, drizzleTable] of Object.entries(appSchema)) {
+    for (const [tableName, tableOrRelation] of Object.entries(appSchema)) {
+      // Check if the property is a valid Drizzle table.
+      if (!isDrizzleTable(tableOrRelation)) {
+        console.log(
+          `Skipping non-table property in table creation: ${tableName}`
+        );
+        continue;
+      }
+
+      const drizzleTable = tableOrRelation;
       const tableExistsResult = await db.get<{ name: string }>(
         sql`SELECT name FROM sqlite_master WHERE type='table' AND name=${tableName}`
       );
@@ -86,37 +99,20 @@ async function createTablesFromSchema(
 
       if (!tableExists) {
         console.log(`Creating table: ${tableName}`);
-
+        // THE FIX - Step 3: Use the constant here as well.
+        const columns = drizzleTable[drizzleColumnsSymbol];
         const columnDefinitions: string[] = [];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const columns = (drizzleTable as any)[
-          Symbol.for("drizzle:Columns")
-        ] as Record<string, SQLiteColumn>;
-
-        if (!columns) {
-          console.error(
-            `Error creating table ${tableName}: Cannot find Symbol.for('drizzle:Columns'). DrizzleTable object:`,
-            drizzleTable
-          );
-          continue;
-        }
 
         for (const column of Object.values(columns)) {
           let colStr = `"${column.name}" ${column.getSQLType()}`;
-          if (column.primary) {
-            colStr += " PRIMARY KEY";
-          }
-          if (column.notNull) {
-            colStr += " NOT NULL";
-          }
+          if (column.primary) colStr += " PRIMARY KEY";
+          if (column.notNull) colStr += " NOT NULL";
           if (column.hasDefault) {
             const defaultValue = column.default;
             if (typeof defaultValue === "string") {
               colStr += ` DEFAULT '${defaultValue.replace(/'/g, "''")}'`;
-            } else if (typeof defaultValue === "number") {
+            } else {
               colStr += ` DEFAULT ${defaultValue}`;
-            } else if (typeof defaultValue === "boolean") {
-              colStr += ` DEFAULT ${defaultValue ? 1 : 0}`;
             }
           }
           columnDefinitions.push(colStr);
@@ -127,23 +123,17 @@ async function createTablesFromSchema(
         );
         await db.run(createTableQuery);
         console.log(`Table ${tableName} created.`);
-      } else {
-        console.log(
-          `Table ${tableName} already exists (createTablesFromSchema).`
-        );
       }
     }
     console.log("createTablesFromSchema execution complete.");
   } catch (error) {
-    console.error("Error in createTablesFromSchema (outer):", error);
+    console.error("Error in createTablesFromSchema:", error);
     throw error;
   }
 }
 
 const SCHEMA_META_TABLE_NAME = "_convex_schema_meta";
 const SCHEMA_META_ROW_KEY = "current_schema";
-const COMPACT_EMPTY_SCHEMA_SNAPSHOT = "{}";
-const FORMATTED_EMPTY_SCHEMA_SNAPSHOT = JSON.stringify({}, null, 2);
 
 const schemaMetaTableDrizzle = sqliteTable(SCHEMA_META_TABLE_NAME, {
   key: text("key").primaryKey(),
@@ -160,9 +150,8 @@ export async function ensureDatabaseSchemaIsUpToDate(
   const metaTableEntry = await db.get<{ name: string }>(
     sql`SELECT name FROM sqlite_master WHERE type='table' AND name=${SCHEMA_META_TABLE_NAME}`
   );
-  const metaTableExists = !!metaTableEntry;
 
-  if (!metaTableExists) {
+  if (!metaTableEntry) {
     console.log(`Creating schema metadata table: ${SCHEMA_META_TABLE_NAME}`);
     const createMetaTableSQL = sql.raw(`
       CREATE TABLE ${SCHEMA_META_TABLE_NAME} (
@@ -172,83 +161,36 @@ export async function ensureDatabaseSchemaIsUpToDate(
       );
     `);
     await db.run(createMetaTableSQL);
-    console.log(`Schema metadata table ${SCHEMA_META_TABLE_NAME} created.`);
+    console.log(`Schema metadata table created.`);
   }
 
   const currentSnapshotJson = generateSchemaSnapshot(appSchema);
 
-  let storedSnapshotJson: string | undefined;
   const storedEntry = await db
     .select()
     .from(schemaMetaTableDrizzle)
     .where(eq(schemaMetaTableDrizzle.key, SCHEMA_META_ROW_KEY))
     .get();
 
-  if (storedEntry) {
-    storedSnapshotJson = storedEntry.schema_json_snapshot;
-  }
-
-  const isCurrentSnapshotEffectivelyEmpty =
-    currentSnapshotJson === COMPACT_EMPTY_SCHEMA_SNAPSHOT ||
-    currentSnapshotJson === FORMATTED_EMPTY_SCHEMA_SNAPSHOT;
+  const storedSnapshotJson = storedEntry?.schema_json_snapshot;
 
   if (!storedSnapshotJson) {
-    console.log(
-      "No stored schema snapshot found. Initializing schema and storing snapshot."
-    );
-    try {
-      await createTablesFromSchema(db, appSchema);
-      await db.insert(schemaMetaTableDrizzle).values({
-        key: SCHEMA_META_ROW_KEY,
-        schema_json_snapshot: currentSnapshotJson,
-        last_updated_at: Date.now(),
-      });
-      console.log("Database schema initialized and snapshot stored.");
-    } catch (error) {
-      console.error(
-        "Error during initial schema creation or snapshot storage:",
-        error
-      );
-      throw error;
-    }
+    console.log("No stored schema snapshot found. Initializing schema...");
+    await createTablesFromSchema(db, appSchema);
+    await db.insert(schemaMetaTableDrizzle).values({
+      key: SCHEMA_META_ROW_KEY,
+      schema_json_snapshot: currentSnapshotJson,
+      last_updated_at: Date.now(),
+    });
+    console.log("Database schema initialized and snapshot stored.");
   } else if (storedSnapshotJson === currentSnapshotJson) {
-    console.log("Database schema is up-to-date. No changes needed.");
-  } else if (
-    (storedSnapshotJson === COMPACT_EMPTY_SCHEMA_SNAPSHOT ||
-      storedSnapshotJson === FORMATTED_EMPTY_SCHEMA_SNAPSHOT) &&
-    !isCurrentSnapshotEffectivelyEmpty
-  ) {
-    console.log(
-      "Stored schema snapshot is empty, current schema is populated. Initializing/updating schema and storing new snapshot."
-    );
-    try {
-      await createTablesFromSchema(db, appSchema);
-      await db
-        .update(schemaMetaTableDrizzle)
-        .set({
-          schema_json_snapshot: currentSnapshotJson,
-          last_updated_at: Date.now(),
-        })
-        .where(eq(schemaMetaTableDrizzle.key, SCHEMA_META_ROW_KEY));
-      console.log(
-        "Database schema (re)initialized from empty and new snapshot stored."
-      );
-    } catch (error) {
-      console.error(
-        "Error during schema (re)initialization from empty or snapshot update:",
-        error
-      );
-      throw error;
-    }
+    console.log("Database schema is up-to-date.");
   } else {
     console.error("Database schema mismatch detected!");
     console.error("Stored snapshot:", storedSnapshotJson);
     console.error("Current snapshot:", currentSnapshotJson);
     throw new Error(
-      `Database schema mismatch detected. The schema defined in convex/schema.ts has changed \\n` +
-        `in a way that is incompatible with the existing database structure. \\n` +
-        `Please manually migrate your data or clear the database using 'pnpm db:clear' \\n` +
-        `and then restart the server.`
+      `Database schema mismatch. Please manually migrate or clear the database ('pnpm db:clear') and restart the server.`
     );
   }
   console.log("ensureDatabaseSchemaIsUpToDate finished successfully.");

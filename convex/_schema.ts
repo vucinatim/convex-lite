@@ -1,50 +1,60 @@
+import { relations } from "drizzle-orm";
 import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core";
 import { createSelectSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-// --- Drizzle Table Definitions (Your code here is perfect) ---
-
-export const countersTable = sqliteTable("counters", {
+export const columnsTable = sqliteTable("columns", {
   _id: text("_id").primaryKey(),
   _createdAt: integer("_createdAt").notNull(),
   _updatedAt: integer("_updatedAt").notNull(),
   name: text("name").notNull(),
-  value: integer("value").notNull(),
 });
 
-export const textEntriesTable = sqliteTable("text_entries", {
+export const taskTable = sqliteTable("tasks", {
   _id: text("_id").primaryKey(),
   _createdAt: integer("_createdAt").notNull(),
   _updatedAt: integer("_updatedAt").notNull(),
-  content: text("content").notNull(),
-});
-
-export const ticketsTable = sqliteTable("tickets", {
-  _id: text("_id").primaryKey(),
-  _createdAt: integer("_createdAt").notNull(),
-  _updatedAt: integer("_updatedAt").notNull(),
+  columnId: text("columnId").notNull(),
   title: text("title").notNull(),
   description: text("description").notNull(),
 });
 
+// THE NEW PART: Define the relationship
+export const columnRelations = relations(columnsTable, ({ many }) => ({
+  // A column has `many` tasks. The `tasks` property will be populated.
+  tasks: many(taskTable),
+}));
+
+export const taskRelations = relations(taskTable, ({ one }) => ({
+  // A task belongs to `one` column. This defines the foreign key link.
+  column: one(columnsTable, {
+    fields: [taskTable.columnId],
+    references: [columnsTable._id],
+  }),
+}));
+
+export const tables = {
+  columns: columnsTable,
+  tasks: taskTable,
+};
+
 // --- Export Drizzle tables (Still correct) ---
 export const schema = {
-  counters: countersTable,
-  text_entries: textEntriesTable,
-  tickets: ticketsTable,
+  columns: columnsTable,
+  tasks: taskTable,
+  columnRelations,
+  taskRelations,
 };
 export type AppSchema = typeof schema;
 
 // --- Zod Select Schema Generation (Still correct) ---
-export const selectCountersSchema = createSelectSchema(countersTable);
-export const selectTextEntriesSchema = createSelectSchema(textEntriesTable);
-export const selectTicketsSchema = createSelectSchema(ticketsTable);
+export const selectColumnsSchema = createSelectSchema(columnsTable);
+export const selectTasksSchema = createSelectSchema(taskTable);
 
 // Construct a Zod schema for the entire app structure by composing the individual schemas.
 export const zodAppSchema = z.object({
-  counters: selectCountersSchema.def,
-  text_entries: selectTextEntriesSchema,
-  tickets: selectTicketsSchema,
+  columns: selectColumnsSchema,
+  tasks: selectTasksSchema,
 });
 
 /**

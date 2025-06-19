@@ -1,5 +1,5 @@
-import { query } from "convex/lib/server";
-import { schema as appSchema } from "convex/schema";
+import { query } from "convex/_lib/server";
+import { tables } from "convex/_schema";
 import z4 from "zod/v4";
 
 export const getAdminTableData = query({
@@ -11,8 +11,8 @@ export const getAdminTableData = query({
       );
     }
 
-    const tableKey = tableNameString as keyof typeof appSchema;
-    const table = appSchema[tableKey];
+    const tableKey = tableNameString as keyof typeof tables;
+    const table = tables[tableKey];
 
     if (!table) {
       throw new Error(`Table "${tableNameString}" not found in schema.`);

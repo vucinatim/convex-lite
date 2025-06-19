@@ -1,43 +1,28 @@
 import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import ReactDOM from "react-dom/client";
+import { RouterProvider, createRouter } from "@tanstack/react-router";
 import "./index.css";
-import App from "./App.tsx";
-import AdminPage from "./pages/admin-page.tsx";
-import TableDataView from "./components/admin/table-data-view.tsx";
-import { connect as connectWebSocket } from "./lib/websocket";
 
-// Initialize WebSocket connection
-connectWebSocket();
+// Import the generated route tree
+import { routeTree } from "./routeTree.gen.ts";
 
-// Define routes
-const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <App />,
-  },
-  {
-    path: "/admin",
-    element: <AdminPage />,
-    children: [
-      {
-        index: true,
-        element: (
-          <p className="p-4 text-zinc-400">
-            Select a table from the sidebar to view its data.
-          </p>
-        ),
-      },
-      {
-        path: ":tableName",
-        element: <TableDataView />,
-      },
-    ],
-  },
-]);
+// Create a new router instance
+const router = createRouter({ routeTree });
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <RouterProvider router={router} />
-  </StrictMode>
-);
+// Register the router instance for type safety
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router;
+  }
+}
+
+// Render the app
+const rootElement = document.getElementById("root")!;
+if (!rootElement.innerHTML) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <StrictMode>
+      <RouterProvider router={router} />
+    </StrictMode>
+  );
+}

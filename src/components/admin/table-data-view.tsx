@@ -1,5 +1,4 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { useParams } from "react-router-dom";
 import {
   Table,
   TableBody,
@@ -11,9 +10,13 @@ import {
 } from "@/components/ui/table";
 import { useQuery } from "../../hooks/use-convex-lite"; // Import useQuery
 import { api } from "convex/_generated/api";
+import { useParams } from "@tanstack/react-router";
 
 const TableDataView: React.FC = () => {
-  const { tableName } = useParams<{ tableName: string }>();
+  const tableName = useParams({
+    from: "/admin/$tableName",
+    select: (params) => params.tableName,
+  });
   // tableName is string from route param, or undefined if not present
 
   const [columns, setColumns] = useState<string[]>([]);
@@ -53,9 +56,9 @@ const TableDataView: React.FC = () => {
   }
 
   // isLoading is true only if tableName is present and query is active
-  if (isLoading && tableName) {
-    return <p className="p-4 text-zinc-400">Loading data for {tableName}...</p>;
-  }
+  // if (isLoading && tableName) {
+  //   return <p className="p-4 text-zinc-400">Loading data for {tableName}...</p>;
+  // }
 
   if (error) {
     return (
@@ -136,8 +139,8 @@ const TableDataView: React.FC = () => {
                             ? "True"
                             : "False"
                           : typeof cellValue === "object" && cellValue !== null
-                          ? JSON.stringify(cellValue)
-                          : String(cellValue ?? "N/A")}
+                            ? JSON.stringify(cellValue)
+                            : String(cellValue ?? "N/A")}
                       </TableCell>
                     );
                   })}

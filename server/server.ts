@@ -17,9 +17,9 @@ import type {
   RequeryMessage,
 } from "../common/web-socket-types";
 import { MessageType } from "../common/web-socket-types";
-import type { WrappedApiFunction, QueryReference } from "../convex/lib/server";
+import type { WrappedApiFunction, QueryReference } from "convex/_lib/server";
 
-import { schema as appSchema } from "../convex/schema";
+import { schema as appSchema } from "../convex/_schema";
 import db from "./lib/database";
 import { ensureDatabaseSchemaIsUpToDate } from "./lib/schema-initializer";
 

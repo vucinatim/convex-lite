@@ -1,6 +1,6 @@
-import { Outlet } from "react-router-dom";
+import { Outlet } from "@tanstack/react-router";
 import AdminLayout from "../components/admin/admin-layout";
-import { schema } from "../../convex/schema";
+import { schema } from "../../convex/_schema";
 
 const tableNames = Object.keys(schema);
 

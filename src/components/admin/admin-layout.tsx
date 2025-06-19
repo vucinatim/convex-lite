@@ -1,25 +1,34 @@
 import React from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link } from "@tanstack/react-router";
+import { Route as TableNameRoute } from "../../routes/admin/$tableName";
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
-} from "@/components/ui/resizable"; // Assuming default ShadCN import path
+} from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 
 interface AdminLayoutProps {
   children: React.ReactNode;
-  tableNames: string[]; // Add tableNames prop
+  tableNames: string[];
 }
 
 const AdminLayout: React.FC<AdminLayoutProps> = ({ children, tableNames }) => {
-  const { tableName: activeTable } = useParams(); // Get active table from URL
+  // Get active table from URL using TanStack Router
+  let activeTable: string | undefined;
+  try {
+    const params = TableNameRoute.useParams();
+    activeTable = params.tableName;
+  } catch {
+    // Not on a tableName route
+    activeTable = undefined;
+  }
 
   return (
     <ResizablePanelGroup
       direction="horizontal"
-      className="h-screen w-screen bg-zinc-900 text-zinc-50"
+      className="h-[calc(100vh-4rem)] w-full bg-zinc-900 text-zinc-50"
     >
       <ResizablePanel
         defaultSize={20}
@@ -35,11 +44,13 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children, tableNames }) => {
             {tableNames.map((tableName) => (
               <Button
                 key={tableName}
-                variant={activeTable === tableName ? "secondary" : "ghost"} // Highlight active table
+                variant={activeTable === tableName ? "secondary" : "ghost"}
                 className="w-full justify-start"
-                asChild // Important: Allows Button to wrap Link
+                asChild
               >
-                <Link to={`/admin/${tableName}`}>{tableName}</Link>
+                <Link to="/admin/$tableName" params={{ tableName }}>
+                  {tableName}
+                </Link>
               </Button>
             ))}
           </div>

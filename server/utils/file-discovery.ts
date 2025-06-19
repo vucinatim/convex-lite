@@ -4,8 +4,8 @@ import path from "path";
 // --- Shared Configuration ---
 export const CONVEX_DIR = path.resolve("convex");
 
-const IGNORED_FILES = ["schema.ts", "server.ts"];
-const IGNORED_DIRS = ["_generated", "lib"];
+const IGNORED_FILES = ["_schema.ts", "server.ts"];
+const IGNORED_DIRS = ["_generated", "_lib"];
 
 /**
  * Recursively finds all valid API source files within a directory,
