@@ -60,7 +60,7 @@ export const incrementCounter = mutation({
 
       const updatedCounter = await db
         .update(countersTable)
-        .set({ value: fetchedCounter.value + 1, _updatedAt: Date.now() })
+        .set({ value: fetchedCounter.value + 500, _updatedAt: Date.now() })
         .where(eq(countersTable._id, fetchedCounter._id));
 
       // Invalidate the queries to get the counter and admin table data.

@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback } from "react";
-import { sendMessage, subscribeToMessages } from "../lib/websocket";
 import type {
   QueryRequestMessage,
   DataResponseMessage,
@@ -12,26 +11,27 @@ import type {
 import { MessageType } from "../../common/web-socket-types";
 import { v4 as uuidv4 } from "uuid";
 import type { WrappedApiFunction } from "../../convex/server";
+import {
+  connectionManager,
+  type ConnectionStatus,
+} from "common/connection-manager";
 
-// --- Type Guards ---
+// --- Type Guards & Helpers ---
+
 function isDataResponseMessage<T>(
   msg: WebSocketMessage
 ): msg is DataResponseMessage<T> {
   return msg.type === MessageType.DATA_UPDATE;
 }
-
 function isErrorResponseMessage(
   msg: WebSocketMessage
 ): msg is ErrorResponseMessage {
   return msg.type === MessageType.ERROR;
 }
-
-// A new type guard to identify invalidation messages from the server.
 function isRequeryMessage(msg: WebSocketMessage): msg is RequeryMessage {
   return msg.type === MessageType.REQUERY;
 }
 
-// --- Type Helpers (Unchanged) ---
 type ArgsType<T extends WrappedApiFunction<any, any>> =
   T extends WrappedApiFunction<infer A, any> ? A : never;
 type RetType<T extends WrappedApiFunction<any, any>> =
@@ -39,7 +39,20 @@ type RetType<T extends WrappedApiFunction<any, any>> =
 type QueryHookArgs<T extends WrappedApiFunction<any, any>> =
   ArgsType<T> extends void ? [] : [ArgsType<T>];
 
-// --- useQuery ---
+// --- Hooks ---
+
+export function useConnectionState(): ConnectionStatus {
+  const [status, setStatus] = useState<ConnectionStatus>(
+    connectionManager.status
+  );
+
+  useEffect(() => {
+    const unsubscribe = connectionManager.subscribeToStatus(setStatus);
+    return unsubscribe;
+  }, []);
+
+  return status;
+}
 
 export interface UseQueryResult<TData> {
   data: TData | undefined;
@@ -58,18 +71,23 @@ export function useQuery<T extends WrappedApiFunction<any, any>>(
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<ErrorResponseMessage | null>(null);
 
-  // This state is the key to triggering a refetch.
   const [refetchIndex, setRefetchIndex] = useState(0);
+  const refetch = useCallback(() => setRefetchIndex((i) => i + 1), []);
 
-  // A stable refetch function that can be called from anywhere.
-  const refetch = useCallback(() => {
-    setRefetchIndex((i) => i + 1);
-  }, []);
+  const connectionStatus = useConnectionState();
 
-  // Effect for handling the initial fetch and subsequent refetches.
+  // THE REFACTOR: A single, unified useEffect for data fetching that
+  // is now directly aware of the connection status.
   useEffect(() => {
     if (!queryKeyString) {
       setIsLoading(false);
+      return;
+    }
+
+    // If we are not connected, we should be in a loading state, but not
+    // attempt to fetch. The effect will re-run when the status changes.
+    if (connectionStatus !== "connected") {
+      setIsLoading(true);
       return;
     }
 
@@ -85,52 +103,50 @@ export function useQuery<T extends WrappedApiFunction<any, any>>(
         queryKey: queryKeyString,
         params: queryParams,
       };
-      sendMessage(queryMessage);
+      connectionManager.sendMessage(queryMessage);
     };
 
     doFetch();
 
-    // This subscription only cares about the response to this specific request.
-    const unsubscribe = subscribeToMessages((message: WebSocketMessage) => {
-      if (isCancelled || message.id !== requestId) return;
-
-      if (isDataResponseMessage<RetType<T>>(message)) {
-        setData(message.data);
-        setIsLoading(false);
-      } else if (isErrorResponseMessage(message)) {
-        setError(message);
-        setIsLoading(false);
+    const unsubscribe = connectionManager.subscribeToMessages(
+      (message: WebSocketMessage) => {
+        if (isCancelled || message.id !== requestId) return;
+        if (isDataResponseMessage<RetType<T>>(message)) {
+          setData(message.data);
+          setIsLoading(false);
+        } else if (isErrorResponseMessage(message)) {
+          setError(message);
+          setIsLoading(false);
+        }
       }
-    });
+    );
 
     return () => {
       isCancelled = true;
-      unsubscribe.then((unsub) => unsub()).catch(console.error);
+      unsubscribe();
     };
-    // This effect now runs on initial load AND whenever refetchIndex changes.
-  }, [queryKeyString, queryParams, refetchIndex]);
+    // This effect now re-runs whenever the connection status changes,
+    // in addition to the other dependencies.
+  }, [queryKeyString, queryParams, refetchIndex, connectionStatus]);
 
-  // A separate, single effect for listening to invalidation messages.
+  // A separate effect for listening to invalidation messages (this is unchanged)
   useEffect(() => {
-    // This subscription listens to ALL messages to check for invalidations.
-    const unsubscribe = subscribeToMessages((message: WebSocketMessage) => {
-      if (isRequeryMessage(message) && message.queryKey === queryKeyString) {
-        console.log(
-          `Received invalidation for ${queryKeyString}, refetching...`
-        );
-        refetch();
+    const unsubscribe = connectionManager.subscribeToMessages(
+      (message: WebSocketMessage) => {
+        if (isRequeryMessage(message) && message.queryKey === queryKeyString) {
+          console.log(
+            `[Convex-Lite] Received invalidation for ${queryKeyString}, refetching...`
+          );
+          refetch();
+        }
       }
-    });
+    );
 
-    return () => {
-      unsubscribe.then((unsub) => unsub()).catch(console.error);
-    };
-  }, [queryKeyString, refetch]); // `refetch` is stable due to useCallback
+    return unsubscribe;
+  }, [queryKeyString, refetch]);
 
   return { data, isLoading, error };
 }
-
-// --- useMutation (No changes needed) ---
 
 export interface UseMutationResult<TArgs, TResponse> {
   mutate: (args: TArgs) => Promise<TResponse | undefined>;
@@ -155,6 +171,11 @@ export function useMutation<T extends WrappedApiFunction<any, any>>(
         reject(err);
         return;
       }
+
+      if (connectionManager.status === "disconnected") {
+        connectionManager.connect();
+      }
+
       setIsLoading(true);
       setError(null);
       const requestId = uuidv4();
@@ -164,20 +185,22 @@ export function useMutation<T extends WrappedApiFunction<any, any>>(
         mutationKey: mutationKeyString,
         args: mutateArgs,
       };
-      sendMessage(mutationMessage);
-      const unsubscribePromise = subscribeToMessages(
+      connectionManager.sendMessage(mutationMessage);
+
+      const unsubscribe = connectionManager.subscribeToMessages(
         (message: WebSocketMessage) => {
           if (message.id !== requestId) return;
+
           if (isDataResponseMessage(message)) {
             setIsLoading(false);
             setError(null);
             resolve(message.data as RetType<T>);
-            unsubscribePromise.then((unsub) => unsub()).catch(console.error);
+            unsubscribe();
           } else if (isErrorResponseMessage(message)) {
             setIsLoading(false);
             setError(message);
             reject(message);
-            unsubscribePromise.then((unsub) => unsub()).catch(console.error);
+            unsubscribe();
           }
         }
       );

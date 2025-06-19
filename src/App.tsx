@@ -10,10 +10,10 @@ function App() {
     data: counterData,
     isLoading: isLoadingCounter,
     error: counterError,
-  } = useQuery(api.counter.getCounter);
+  } = useQuery(api.counter.getCounter); // neki
 
   const {
-    mutate: incrementCounter,
+    mutate: incrementCounter, // hello
     isLoading: isIncrementing,
     error: incrementError,
   } = useMutation(api.counter.incrementCounter);
