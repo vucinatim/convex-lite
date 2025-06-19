@@ -1,5 +1,5 @@
 {
-  "name": "convex-at-home",
+  "name": "convex-lite",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -7,11 +7,11 @@
     "dev": "concurrently \"pnpm dev:client\" \"pnpm dev:server\"",
     "dev:client": "vite --host",
     "dev:server": "nodemon",
-    "generate:api": "node scripts/generate-convex-api.mjs",
+    "generate:api": "tsx scripts/generate-convex-api.ts",
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
-    "db:clear": "node ./scripts/clear-db.mjs"
+    "db:clear": "tsx ./scripts/clear-db.ts"
   },
   "dependencies": {
     "@radix-ui/react-scroll-area": "^1.2.9",

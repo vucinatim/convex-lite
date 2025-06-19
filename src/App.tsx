@@ -4,19 +4,19 @@ import { useQuery, useMutation } from "./hooks/use-convex-lite";
 import { api } from "convex/_generated/api";
 
 function App() {
-  const { mutate: createCounter } = useMutation(api.counter.createCounter);
+  const { mutate: createCounter } = useMutation(api.counters.createCounter);
 
   const {
     data: counterData,
     isLoading: isLoadingCounter,
     error: counterError,
-  } = useQuery(api.counter.getCounter); // neki
+  } = useQuery(api.counters.getCounter); // neki
 
   const {
     mutate: incrementCounter, // hello
     isLoading: isIncrementing,
     error: incrementError,
-  } = useMutation(api.counter.incrementCounter);
+  } = useMutation(api.counters.incrementCounter);
 
   const handleIncrement = async () => {
     try {

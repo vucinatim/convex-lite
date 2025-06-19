@@ -12,22 +12,6 @@ export const countersTable = sqliteTable("counters", {
   value: integer("value").notNull(),
 });
 
-export const documentsTable = sqliteTable("documents", {
-  _id: text("_id").primaryKey(),
-  _createdAt: integer("_createdAt").notNull(),
-  _updatedAt: integer("_updatedAt").notNull(),
-  title: text("title").notNull(),
-  content: text("content").notNull(),
-});
-
-export const todosTable = sqliteTable("todos", {
-  _id: text("_id").primaryKey(),
-  _createdAt: integer("_createdAt").notNull(),
-  _updatedAt: integer("_updatedAt").notNull(),
-  text: text("text_content").notNull(),
-  completed: integer("completed", { mode: "boolean" }).notNull(),
-});
-
 export const textEntriesTable = sqliteTable("text_entries", {
   _id: text("_id").primaryKey(),
   _createdAt: integer("_createdAt").notNull(),
@@ -35,27 +19,32 @@ export const textEntriesTable = sqliteTable("text_entries", {
   content: text("content").notNull(),
 });
 
+export const ticketsTable = sqliteTable("tickets", {
+  _id: text("_id").primaryKey(),
+  _createdAt: integer("_createdAt").notNull(),
+  _updatedAt: integer("_updatedAt").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+});
+
 // --- Export Drizzle tables (Still correct) ---
 export const schema = {
   counters: countersTable,
-  documents: documentsTable,
-  todos: todosTable,
   text_entries: textEntriesTable,
+  tickets: ticketsTable,
 };
 export type AppSchema = typeof schema;
 
 // --- Zod Select Schema Generation (Still correct) ---
 export const selectCountersSchema = createSelectSchema(countersTable);
-export const selectDocumentsSchema = createSelectSchema(documentsTable);
-export const selectTodosSchema = createSelectSchema(todosTable);
 export const selectTextEntriesSchema = createSelectSchema(textEntriesTable);
+export const selectTicketsSchema = createSelectSchema(ticketsTable);
 
 // Construct a Zod schema for the entire app structure by composing the individual schemas.
 export const zodAppSchema = z.object({
   counters: selectCountersSchema.def,
-  documents: selectDocumentsSchema,
-  todos: selectTodosSchema,
   text_entries: selectTextEntriesSchema,
+  tickets: selectTicketsSchema,
 });
 
 /**

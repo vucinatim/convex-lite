@@ -1,4 +1,4 @@
-import { query } from "convex/server";
+import { query } from "convex/lib/server";
 import { schema as appSchema } from "convex/schema";
 import z4 from "zod/v4";
 

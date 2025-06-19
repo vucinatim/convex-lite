@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { countersTable } from "convex/schema";
-import { mutation, query } from "convex/server";
-import { getAdminTableData } from "./table_api";
+import { mutation, query } from "convex/lib/server";
+import { getAdminTableData } from "./tables";
 
-const GLOBAL_COUNTER_ID = "the_one_and_only_counter";
+const GLOBAL_COUNTER_ID = "the_one_and_only_counter"; //hello
 
 export const createCounter = mutation({
   // The context now provides `scheduler` for invalidation.

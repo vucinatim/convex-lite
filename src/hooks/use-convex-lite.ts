@@ -10,7 +10,7 @@ import type {
 } from "../../common/web-socket-types";
 import { MessageType } from "../../common/web-socket-types";
 import { v4 as uuidv4 } from "uuid";
-import type { WrappedApiFunction } from "../../convex/server";
+import type { WrappedApiFunction } from "../../convex/lib/server";
 import {
   connectionManager,
   type ConnectionStatus,

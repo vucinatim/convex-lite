@@ -3,10 +3,10 @@ import express, { type Express, type Response } from "express";
 import cors from "cors";
 import { WebSocketServer, WebSocket } from "ws";
 import http from "http";
-import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { ZodError } from "zod";
+import { getApiFiles } from "./utils/file-discovery";
 
 import type {
   WebSocketMessage,
@@ -17,7 +17,7 @@ import type {
   RequeryMessage,
 } from "../common/web-socket-types";
 import { MessageType } from "../common/web-socket-types";
-import type { WrappedApiFunction, QueryReference } from "../convex/server";
+import type { WrappedApiFunction, QueryReference } from "../convex/lib/server";
 
 import { schema as appSchema } from "../convex/schema";
 import db from "./lib/database";
@@ -40,58 +40,45 @@ const app: Express = express();
 const port: number | string = process.env.PORT || 3001;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const CONVEX_DIR = path.resolve(__dirname, "../convex");
 
-// --- Dynamic API Loading ---
-async function loadApiHandlersFromDirectory(
-  dirPath: string,
-  keyPrefix: string
-) {
-  try {
-    const files = await fs.readdir(dirPath);
-    for (const file of files) {
-      if (!file.endsWith(".ts") && !file.endsWith(".js")) continue;
-      const modulePath = path.join(dirPath, file);
-      try {
-        const module = await import(pathToFileURL(modulePath).href);
-        const moduleName = file.replace(/_api\.(ts|js)$/, "");
-        for (const exportName in module) {
-          const handlerObject = module[exportName] as WrappedApiFunction<
-            any,
-            any
-          >;
-          if (
-            handlerObject &&
-            (handlerObject._type === "query" ||
-              handlerObject._type === "mutation")
-          ) {
-            const fullKey = `${keyPrefix}${moduleName}:${exportName}`;
-            apiHandlers.set(fullKey, handlerObject);
-            // Also populate the reverse map for invalidation lookups
-            reverseApiMap.set(handlerObject, fullKey);
-            console.log(
-              `Registered ${handlerObject._type} handler: ${fullKey}`
-            );
-          }
-        }
-      } catch (err) {
-        console.error(`Error importing module ${modulePath}:`, err);
-      }
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.error(`Error reading API directory ${dirPath}:`, err);
-    } else {
-      console.warn(`API handler directory not found: ${dirPath}. Skipping.`);
-    }
-  }
-}
-
+/**
+ * The new main handler loading function. It recursively scans the entire
+ * convex directory to find and register API handlers.
+ */
 async function loadApiHandlers() {
   console.log("Loading API handlers...");
-  const apiDir = path.resolve(__dirname, "../convex/api");
-  const adminApiDir = path.resolve(__dirname, "../convex/admin");
-  await loadApiHandlersFromDirectory(apiDir, "");
-  await loadApiHandlersFromDirectory(adminApiDir, "admin_");
+
+  for await (const filePath of getApiFiles(CONVEX_DIR)) {
+    try {
+      const module = await import(pathToFileURL(filePath).href);
+      // e.g., 'tasks/queries.ts' -> 'tasks_queries'
+      const moduleKey = path
+        .relative(CONVEX_DIR, filePath)
+        .replace(/\.(ts|js)$/, "")
+        .replace(/[/\\]/g, "_");
+
+      for (const exportName in module) {
+        const handlerObject = module[exportName] as WrappedApiFunction<
+          any,
+          any
+        >;
+        if (
+          handlerObject &&
+          (handlerObject._type === "query" ||
+            handlerObject._type === "mutation")
+        ) {
+          const fullKey = `${moduleKey}:${exportName}`;
+          apiHandlers.set(fullKey, handlerObject);
+          reverseApiMap.set(handlerObject, fullKey);
+          console.log(`Registered ${handlerObject._type} handler: ${fullKey}`);
+        }
+      }
+    } catch (err) {
+      console.error(`Error importing module ${filePath}:`, err);
+    }
+  }
+
   console.log("API handlers loading complete.");
 }
 

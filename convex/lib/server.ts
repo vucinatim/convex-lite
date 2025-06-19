@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { z, type ZodObject } from "zod/v4";
-import type { HandlerContext as BaseHandlerContext } from "../server/server";
+import type { HandlerContext as BaseHandlerContext } from "../../server/server";
 
 // --- Core Type Definitions ---
 

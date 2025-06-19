@@ -30,7 +30,7 @@ const TableDataView: React.FC = () => {
     isLoading,
     error,
   } = useQuery(
-    api.table.getAdminTableData,
+    api.tables.getAdminTableData,
     queryParams as { tableNameString: string }
   );
 
