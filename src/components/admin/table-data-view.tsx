@@ -10,6 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useQuery } from "../../hooks/use-convex-lite"; // Import useQuery
+import { api } from "convex/_generated/api";
 
 const TableDataView: React.FC = () => {
   const { tableName } = useParams<{ tableName: string }>();
@@ -28,9 +29,9 @@ const TableDataView: React.FC = () => {
     data: rawData, // Expected to be Record<string, unknown>[] | null
     isLoading,
     error,
-  } = useQuery<Record<string, unknown>[]>(
-    tableName ? "get_admin_table_data" : null, // Query key, or null to prevent query if no tableName
-    queryParams // Use the memoized queryParams object
+  } = useQuery(
+    api.table.getAdminTableData,
+    queryParams as { tableNameString: string }
   );
 
   useEffect(() => {

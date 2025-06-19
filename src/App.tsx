@@ -1,54 +1,28 @@
-import { useState } from "react";
 import reactLogo from "./assets/react.svg";
 import viteLogo from "/vite.svg";
 import { useQuery, useMutation } from "./hooks/use-convex-lite";
-import type { countersTable, textEntriesTable } from "convex/schema";
+import { api } from "convex/_generated/api";
 
 function App() {
-  // Counter Showcase
+  const { mutate: createCounter } = useMutation(api.counter.createCounter);
+
   const {
     data: counterData,
     isLoading: isLoadingCounter,
     error: counterError,
-  } = useQuery<typeof countersTable.$inferSelect>("getCounter");
+  } = useQuery(api.counter.getCounter);
 
   const {
     mutate: incrementCounter,
     isLoading: isIncrementing,
     error: incrementError,
-  } = useMutation<typeof countersTable.$inferSelect, void>("incrementCounter");
+  } = useMutation(api.counter.incrementCounter);
 
   const handleIncrement = async () => {
     try {
       await incrementCounter();
     } catch (err) {
       console.error("Failed to increment counter:", err);
-    }
-  };
-
-  // Text Storage Showcase
-  const [textInput, setTextInput] = useState("");
-  const {
-    data: textEntriesData,
-    isLoading: isLoadingTextEntries,
-    error: textEntriesError,
-  } = useQuery<(typeof textEntriesTable.$inferSelect)[]>("getTextEntries");
-
-  const {
-    mutate: addTextEntry,
-    isLoading: isAddingText,
-    error: addTextError,
-  } = useMutation<typeof textEntriesTable.$inferSelect, { content: string }>(
-    "addTextEntry"
-  );
-
-  const handleAddText = async () => {
-    if (!textInput.trim()) return; // Prevent empty submissions
-    try {
-      await addTextEntry({ content: textInput });
-      setTextInput(""); // Clear input after successful submission
-    } catch (err) {
-      console.error("Failed to add text entry:", err);
     }
   };
 
@@ -79,6 +53,15 @@ function App() {
           <h2 className="text-2xl font-semibold text-gray-700 mb-4">
             Counter Showcase
           </h2>
+          <button
+            onClick={() => {
+              createCounter();
+              alert("New counter created");
+            }}
+            className="btn bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out w-full"
+          >
+            Create Counter
+          </button>
           {isLoadingCounter && (
             <p className="text-gray-500">Loading counter...</p>
           )}
@@ -101,63 +84,6 @@ function App() {
             <p className="text-red-500 mt-2">
               Error incrementing: {incrementError.message}
             </p>
-          )}
-        </div>
-
-        {/* Text Storage Showcase Card */}
-        <div className="card bg-white shadow-xl rounded-lg p-6">
-          <h2 className="text-2xl font-semibold text-gray-700 mb-4">
-            Text Storage Showcase
-          </h2>
-          <div className="mb-4">
-            <input
-              type="text"
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Enter some text"
-              className="input input-bordered w-full p-2 border border-gray-300 rounded mb-2"
-              disabled={isAddingText}
-            />
-            <button
-              onClick={handleAddText}
-              disabled={isAddingText || !textInput.trim()}
-              className="btn bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out w-full"
-            >
-              {isAddingText ? "Saving..." : "Save Text"}
-            </button>
-            {addTextError && (
-              <p className="text-red-500 mt-2">
-                Error saving text: {addTextError.message}
-              </p>
-            )}
-          </div>
-
-          <h3 className="text-xl font-semibold text-gray-700 mb-3">
-            Saved Texts:
-          </h3>
-          {isLoadingTextEntries && (
-            <p className="text-gray-500">Loading texts...</p>
-          )}
-          {textEntriesError && (
-            <p className="text-red-500">
-              Error loading texts: {textEntriesError.message}
-            </p>
-          )}
-          {textEntriesData && textEntriesData.length > 0 ? (
-            <ul className="list-disc list-inside bg-gray-50 p-3 rounded max-h-60 overflow-y-auto">
-              {textEntriesData.map((entry) => (
-                <li key={entry._id} className="text-gray-700 mb-1 truncate">
-                  {entry.content}
-                  <span className="text-xs text-gray-400 ml-2">
-                    ({new Date(entry._createdAt).toLocaleTimeString()})
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            !isLoadingTextEntries && (
-              <p className="text-gray-500">No texts saved yet.</p>
-            )
           )}
         </div>
       </div>

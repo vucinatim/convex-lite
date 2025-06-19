@@ -1,19 +1,20 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useRef } from "react";
-import {
-  sendMessage,
-  subscribeToMessages,
-  // MessageType, // Will import MessageType value from the common path now
-} from "../lib/websocket";
+import { sendMessage, subscribeToMessages } from "../lib/websocket";
 import type {
   QueryRequestMessage,
   DataResponseMessage,
   ErrorResponseMessage,
   WebSocketMessage,
   MutationRequestMessage,
-} from "../../common/web-socket-types"; // Corrected path for types
-import { MessageType } from "../../common/web-socket-types"; // Added import for MessageType value
+} from "../../common/web-socket-types";
+import { MessageType } from "../../common/web-socket-types";
+import { v4 as uuidv4 } from "uuid";
 
-// Type guards
+// Import the core type from our server definition!
+import type { WrappedApiFunction } from "../../convex/server";
+
+// --- Type Guards ---
 function isDataResponseMessage<T>(
   msg: WebSocketMessage
 ): msg is DataResponseMessage<T> {
@@ -26,9 +27,22 @@ function isErrorResponseMessage(
   return msg.type === MessageType.ERROR;
 }
 
-// Helper to generate simple unique IDs
-const generateId = () =>
-  Date.now().toString(36) + Math.random().toString(36).substr(2);
+// --- NEW, Simpler Type Helpers ---
+
+// Extracts the `Args` generic type from a WrappedApiFunction.
+type ArgsType<T extends WrappedApiFunction<any, any>> =
+  T extends WrappedApiFunction<infer A, any> ? A : never;
+
+// Extracts the `Ret` generic type from a WrappedApiFunction.
+type RetType<T extends WrappedApiFunction<any, any>> =
+  T extends WrappedApiFunction<any, infer R> ? R : never;
+
+// Conditionally defines the arguments tuple for the useQuery hook.
+// If the function's `Args` type is `void`, the hook takes no extra parameters.
+type QueryHookArgs<T extends WrappedApiFunction<any, any>> =
+  ArgsType<T> extends void ? [] : [ArgsType<T>];
+
+// --- useQuery ---
 
 export interface UseQueryResult<TData> {
   data: TData | undefined;
@@ -36,84 +50,50 @@ export interface UseQueryResult<TData> {
   error: ErrorResponseMessage | null;
 }
 
-export const useQuery = <TData = unknown, TParams = unknown>(
-  queryKey: string | null | undefined,
-  params?: TParams
-): UseQueryResult<TData> => {
-  const [data, setData] = useState<TData | undefined>(undefined);
+export function useQuery<T extends WrappedApiFunction<any, any>>(
+  queryFunctionReference: T,
+  ...params: QueryHookArgs<T>
+): UseQueryResult<RetType<T>> {
+  const queryKeyString = queryFunctionReference as unknown as string;
+  const queryParams = params[0];
+
+  const [data, setData] = useState<RetType<T> | undefined>(undefined);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<ErrorResponseMessage | null>(null);
 
-  // Use a ref to store the current queryKey and params to avoid stale closures in the subscription
-  const queryDetailsRef = useRef({ queryKey, params });
-  useEffect(() => {
-    queryDetailsRef.current = { queryKey, params };
-  }, [queryKey, params]);
+  const queryDetailsRef = useRef({
+    queryKey: queryKeyString,
+    params: queryParams,
+  });
 
   useEffect(() => {
-    if (!queryKey) {
+    queryDetailsRef.current = { queryKey: queryKeyString, params: queryParams };
+  }, [queryKeyString, queryParams]);
+
+  useEffect(() => {
+    if (!queryKeyString) {
       setIsLoading(false);
       setData(undefined);
       setError(null);
       return;
     }
-
     setIsLoading(true);
     setError(null);
-    // Not setting data to undefined here, to keep previous data while loading new, if desired.
-    // Or, could set to undefined: setData(undefined);
-
-    const requestId = generateId();
-
+    const requestId = uuidv4();
     const queryMessage: QueryRequestMessage = {
       type: MessageType.QUERY,
       id: requestId,
-      queryKey,
-      params,
+      queryKey: queryKeyString,
+      params: queryParams,
     };
-
     sendMessage(queryMessage);
-
     const unsubscribePromise = subscribeToMessages(
       (message: WebSocketMessage) => {
-        const { queryKey: currentQueryKey, params: currentParamsUntyped } =
-          queryDetailsRef.current;
-
-        if (isDataResponseMessage(message)) {
-          if (message.queryKey !== currentQueryKey) {
-            return;
-          }
-
-          if (currentQueryKey === "get_admin_table_data") {
-            const currentParams = currentParamsUntyped as
-              | { tableNameString?: string }
-              | undefined;
-
-            if (message.id === requestId) {
-              setData(message.data as TData);
-              setIsLoading(false);
-              setError(null);
-            } else {
-              const broadcastPayload = message.data as {
-                table: string;
-                data: TData;
-              };
-
-              if (
-                broadcastPayload &&
-                typeof broadcastPayload.table === "string" &&
-                currentParams?.tableNameString === broadcastPayload.table
-              ) {
-                setData(broadcastPayload.data);
-                setError(null);
-              }
-            }
-          } else {
-            setData(message.data as TData);
-            setError(null);
-            if (message.id === requestId) {
-              setIsLoading(false);
-            }
+        const { queryKey: currentQueryKey } = queryDetailsRef.current;
+        if (isDataResponseMessage<RetType<T>>(message)) {
+          if (message.queryKey === currentQueryKey) {
+            setData(message.data);
+            if (message.id === requestId) setIsLoading(false);
           }
         } else if (
           isErrorResponseMessage(message) &&
@@ -125,35 +105,32 @@ export const useQuery = <TData = unknown, TParams = unknown>(
         }
       }
     );
-
     return () => {
-      unsubscribePromise
-        .then((unsub) => unsub())
-        .catch((err) =>
-          console.error("Error unsubscribing from messages:", err)
-        );
-      // Optionally, send a message to the backend to clean up the subscription for this queryKey if no other client uses it.
+      unsubscribePromise.then((unsub) => unsub()).catch(console.error);
     };
-  }, [queryKey, params]); // Re-run effect if queryKey or params change
+  }, [queryKeyString, queryParams]);
 
   return { data, isLoading, error };
-};
+}
+
+// --- useMutation ---
 
 export interface UseMutationResult<TArgs, TResponse> {
-  mutate: (args: TArgs) => Promise<TResponse | undefined>; // Promise resolves with response data or undefined on error
+  mutate: (args: TArgs) => Promise<TResponse | undefined>;
   isLoading: boolean;
   error: ErrorResponseMessage | null;
 }
 
-export const useMutation = <TResponse = unknown, TArgs = unknown>(
-  mutationKey: string | null | undefined
-): UseMutationResult<TArgs, TResponse> => {
+export function useMutation<T extends WrappedApiFunction<any, any>>(
+  mutationFunctionReference: T
+): UseMutationResult<ArgsType<T>, RetType<T>> {
+  const mutationKeyString = mutationFunctionReference as unknown as string;
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<ErrorResponseMessage | null>(null);
 
-  const mutate = (args: TArgs): Promise<TResponse | undefined> => {
+  const mutate = (mutateArgs: ArgsType<T>): Promise<RetType<T> | undefined> => {
     return new Promise((resolve, reject) => {
-      if (!mutationKey) {
+      if (!mutationKeyString) {
         const err = {
           message: "mutationKey is not provided",
         } as ErrorResponseMessage;
@@ -161,58 +138,34 @@ export const useMutation = <TResponse = unknown, TArgs = unknown>(
         reject(err);
         return;
       }
-
       setIsLoading(true);
       setError(null);
-
-      const requestId = generateId();
+      const requestId = uuidv4();
       const mutationMessage: MutationRequestMessage = {
         type: MessageType.MUTATION,
         id: requestId,
-        mutationKey,
-        args: args as unknown, // Cast to unknown, backend will validate
+        mutationKey: mutationKeyString,
+        args: mutateArgs,
       };
-
       sendMessage(mutationMessage);
-
       const unsubscribePromise = subscribeToMessages(
         (message: WebSocketMessage) => {
-          if (message.id !== requestId) return; // Only interested in responses to this specific mutation
-
-          if (isDataResponseMessage<TResponse>(message)) {
+          if (message.id !== requestId) return;
+          if (isDataResponseMessage(message)) {
             setIsLoading(false);
             setError(null);
-            resolve(message.data);
-            unsubscribePromise
-              .then((unsub) => unsub())
-              .catch((err) =>
-                console.error(
-                  "Error unsubscribing from mutation response:",
-                  err
-                )
-              );
+            resolve(message.data as RetType<T>);
+            unsubscribePromise.then((unsub) => unsub()).catch(console.error);
           } else if (isErrorResponseMessage(message)) {
             setIsLoading(false);
             setError(message);
-            reject(message); // Reject promise with the error message
-            unsubscribePromise
-              .then((unsub) => unsub())
-              .catch((err) =>
-                console.error("Error unsubscribing from mutation error:", err)
-              );
+            reject(message);
+            unsubscribePromise.then((unsub) => unsub()).catch(console.error);
           }
         }
       );
-
-      // Optional: Add a timeout for mutations
-      // setTimeout(() => {
-      //   const timeoutError = { message: "Mutation timed out", type: MessageType.ERROR, id: requestId, mutationKey } as ErrorResponseMessage;
-      //   setError(timeoutError);
-      //   reject(timeoutError);
-      //   unsubscribePromise.then(unsub => unsub());
-      // }, 10000); // 10-second timeout
     });
   };
 
-  return { mutate, isLoading, error };
-};
+  return { mutate, isLoading, error } as any;
+}
