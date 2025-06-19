@@ -14,29 +14,34 @@ import type {
   MutationRequestMessage,
   DataResponseMessage,
   ErrorResponseMessage,
-} from "../common/web-socket-types.ts";
-import { MessageType } from "../common/web-socket-types.ts";
-import type { WrappedApiFunction } from "../convex/server.ts";
+  RequeryMessage,
+} from "../common/web-socket-types";
+import { MessageType } from "../common/web-socket-types";
+import type { WrappedApiFunction, QueryReference } from "../convex/server";
 
-import { schema as appSchema } from "../convex/schema.ts";
-import db from "./lib/database.ts";
-import { ensureDatabaseSchemaIsUpToDate } from "./lib/schema-initializer.ts";
+import { schema as appSchema } from "../convex/schema";
+import db from "./lib/database";
+import { ensureDatabaseSchemaIsUpToDate } from "./lib/schema-initializer";
 
 // --- Context & App Setup ---
 
+// This is the base context. The full context, including the scheduler,
+// will be assembled and passed to handlers.
 export interface HandlerContext {
   db: typeof db;
   appSchema: typeof appSchema;
-  broadcastQueryUpdate: <TData>(queryKey: string, data: TData) => void;
 }
 
 const apiHandlers = new Map<string, WrappedApiFunction<any, any>>();
+// This map allows us to find the string key for a function object, which is needed for invalidation.
+const reverseApiMap = new Map<WrappedApiFunction<any, any>, string>();
+
 const app: Express = express();
 const port: number | string = process.env.PORT || 3001;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// --- Dynamic API Loading (Unchanged) ---
+// --- Dynamic API Loading ---
 async function loadApiHandlersFromDirectory(
   dirPath: string,
   keyPrefix: string
@@ -61,6 +66,8 @@ async function loadApiHandlersFromDirectory(
           ) {
             const fullKey = `${keyPrefix}${moduleName}:${exportName}`;
             apiHandlers.set(fullKey, handlerObject);
+            // Also populate the reverse map for invalidation lookups
+            reverseApiMap.set(handlerObject, fullKey);
             console.log(
               `Registered ${handlerObject._type} handler: ${fullKey}`
             );
@@ -88,7 +95,7 @@ async function loadApiHandlers() {
   console.log("API handlers loading complete.");
 }
 
-// --- WebSocket Server Logic with Validation ---
+// --- WebSocket Server Logic with Invalidation ---
 async function startServer() {
   await ensureDatabaseSchemaIsUpToDate(db, appSchema);
   await loadApiHandlers();
@@ -103,18 +110,25 @@ async function startServer() {
   const wss = new WebSocketServer({ server });
   const clients = new Set<WebSocket>();
 
-  const broadcastQueryUpdate = <TData>(queryKey: string, data: TData) => {
-    const message: DataResponseMessage<TData> = {
-      type: MessageType.DATA_UPDATE,
+  // The new invalidation function that will be passed in the context
+  const invalidateQuery = async (queryRef: QueryReference<any, any>) => {
+    const queryKey = reverseApiMap.get(queryRef);
+    if (!queryKey) {
+      console.error(
+        "Could not find query key for invalidation. Was the API handler loaded correctly?"
+      );
+      return;
+    }
+    const message: RequeryMessage = {
+      type: MessageType.REQUERY,
       queryKey,
-      data,
     };
     const messageString = JSON.stringify(message);
     clients.forEach(
       (client) =>
         client.readyState === WebSocket.OPEN && client.send(messageString)
     );
-    console.log(`Broadcasted data update for queryKey: ${queryKey}`);
+    console.log(`Broadcasted invalidation for queryKey: ${queryKey}`);
   };
 
   wss.on("connection", (ws: WebSocket) => {
@@ -135,11 +149,13 @@ async function startServer() {
         return;
       }
 
-      const handlerContext: HandlerContext = {
+      // ** The new context now includes the scheduler **
+      const handlerContext = {
         db,
         appSchema,
-        broadcastQueryUpdate,
+        scheduler: { invalidate: invalidateQuery },
       };
+
       const isQuery = message.type === MessageType.QUERY;
       const key = isQuery
         ? (message as QueryRequestMessage).queryKey
@@ -170,18 +186,13 @@ async function startServer() {
 
       try {
         let validatedArgs = clientArgs;
-        // **RUNTIME VALIDATION STEP**
         if (handlerObject.args) {
-          // If a schema exists, parse the arguments. safeParse doesn't throw.
           const parseResult = handlerObject.args.safeParse(clientArgs || {});
           if (!parseResult.success) {
-            // If parsing fails, throw a formatted Zod error.
             throw parseResult.error;
           }
-          // Use the parsed (and potentially transformed) data for the handler.
           validatedArgs = parseResult.data;
         } else if (clientArgs && Object.keys(clientArgs).length > 0) {
-          // If the handler takes no args but some were provided, it's an error.
           throw new Error("This function does not accept any arguments.");
         }
 
@@ -201,7 +212,6 @@ async function startServer() {
         let errorMessage = `Error in ${handlerObject._type} ${key}: ${
           error instanceof Error ? error.message : String(error)
         }`;
-        // Provide more detailed validation errors to the client
         if (error instanceof ZodError) {
           errorMessage = `Argument validation failed: ${JSON.stringify(
             error.format()

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { sendMessage, subscribeToMessages } from "../lib/websocket";
 import type {
   QueryRequestMessage,
@@ -7,11 +7,10 @@ import type {
   ErrorResponseMessage,
   WebSocketMessage,
   MutationRequestMessage,
+  RequeryMessage,
 } from "../../common/web-socket-types";
 import { MessageType } from "../../common/web-socket-types";
 import { v4 as uuidv4 } from "uuid";
-
-// Import the core type from our server definition!
 import type { WrappedApiFunction } from "../../convex/server";
 
 // --- Type Guards ---
@@ -27,18 +26,16 @@ function isErrorResponseMessage(
   return msg.type === MessageType.ERROR;
 }
 
-// --- NEW, Simpler Type Helpers ---
+// A new type guard to identify invalidation messages from the server.
+function isRequeryMessage(msg: WebSocketMessage): msg is RequeryMessage {
+  return msg.type === MessageType.REQUERY;
+}
 
-// Extracts the `Args` generic type from a WrappedApiFunction.
+// --- Type Helpers (Unchanged) ---
 type ArgsType<T extends WrappedApiFunction<any, any>> =
   T extends WrappedApiFunction<infer A, any> ? A : never;
-
-// Extracts the `Ret` generic type from a WrappedApiFunction.
 type RetType<T extends WrappedApiFunction<any, any>> =
   T extends WrappedApiFunction<any, infer R> ? R : never;
-
-// Conditionally defines the arguments tuple for the useQuery hook.
-// If the function's `Args` type is `void`, the hook takes no extra parameters.
 type QueryHookArgs<T extends WrappedApiFunction<any, any>> =
   ArgsType<T> extends void ? [] : [ArgsType<T>];
 
@@ -61,59 +58,79 @@ export function useQuery<T extends WrappedApiFunction<any, any>>(
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<ErrorResponseMessage | null>(null);
 
-  const queryDetailsRef = useRef({
-    queryKey: queryKeyString,
-    params: queryParams,
-  });
+  // This state is the key to triggering a refetch.
+  const [refetchIndex, setRefetchIndex] = useState(0);
 
-  useEffect(() => {
-    queryDetailsRef.current = { queryKey: queryKeyString, params: queryParams };
-  }, [queryKeyString, queryParams]);
+  // A stable refetch function that can be called from anywhere.
+  const refetch = useCallback(() => {
+    setRefetchIndex((i) => i + 1);
+  }, []);
 
+  // Effect for handling the initial fetch and subsequent refetches.
   useEffect(() => {
     if (!queryKeyString) {
       setIsLoading(false);
-      setData(undefined);
-      setError(null);
       return;
     }
-    setIsLoading(true);
-    setError(null);
+
+    let isCancelled = false;
     const requestId = uuidv4();
-    const queryMessage: QueryRequestMessage = {
-      type: MessageType.QUERY,
-      id: requestId,
-      queryKey: queryKeyString,
-      params: queryParams,
+
+    const doFetch = () => {
+      setIsLoading(true);
+      setError(null);
+      const queryMessage: QueryRequestMessage = {
+        type: MessageType.QUERY,
+        id: requestId,
+        queryKey: queryKeyString,
+        params: queryParams,
+      };
+      sendMessage(queryMessage);
     };
-    sendMessage(queryMessage);
-    const unsubscribePromise = subscribeToMessages(
-      (message: WebSocketMessage) => {
-        const { queryKey: currentQueryKey } = queryDetailsRef.current;
-        if (isDataResponseMessage<RetType<T>>(message)) {
-          if (message.queryKey === currentQueryKey) {
-            setData(message.data);
-            if (message.id === requestId) setIsLoading(false);
-          }
-        } else if (
-          isErrorResponseMessage(message) &&
-          message.id === requestId
-        ) {
-          setIsLoading(false);
-          setError(message);
-          setData(undefined);
-        }
+
+    doFetch();
+
+    // This subscription only cares about the response to this specific request.
+    const unsubscribe = subscribeToMessages((message: WebSocketMessage) => {
+      if (isCancelled || message.id !== requestId) return;
+
+      if (isDataResponseMessage<RetType<T>>(message)) {
+        setData(message.data);
+        setIsLoading(false);
+      } else if (isErrorResponseMessage(message)) {
+        setError(message);
+        setIsLoading(false);
       }
-    );
+    });
+
     return () => {
-      unsubscribePromise.then((unsub) => unsub()).catch(console.error);
+      isCancelled = true;
+      unsubscribe.then((unsub) => unsub()).catch(console.error);
     };
-  }, [queryKeyString, queryParams]);
+    // This effect now runs on initial load AND whenever refetchIndex changes.
+  }, [queryKeyString, queryParams, refetchIndex]);
+
+  // A separate, single effect for listening to invalidation messages.
+  useEffect(() => {
+    // This subscription listens to ALL messages to check for invalidations.
+    const unsubscribe = subscribeToMessages((message: WebSocketMessage) => {
+      if (isRequeryMessage(message) && message.queryKey === queryKeyString) {
+        console.log(
+          `Received invalidation for ${queryKeyString}, refetching...`
+        );
+        refetch();
+      }
+    });
+
+    return () => {
+      unsubscribe.then((unsub) => unsub()).catch(console.error);
+    };
+  }, [queryKeyString, refetch]); // `refetch` is stable due to useCallback
 
   return { data, isLoading, error };
 }
 
-// --- useMutation ---
+// --- useMutation (No changes needed) ---
 
 export interface UseMutationResult<TArgs, TResponse> {
   mutate: (args: TArgs) => Promise<TResponse | undefined>;

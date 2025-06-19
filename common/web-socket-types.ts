@@ -2,6 +2,7 @@ export const MessageType = {
   QUERY: "QUERY",
   MUTATION: "MUTATION",
   DATA_UPDATE: "DATA_UPDATE",
+  REQUERY: "REQUERY",
   ERROR: "ERROR",
 } as const;
 
@@ -31,6 +32,11 @@ export interface DataResponseMessage<T = unknown> extends BaseMessage {
   data: T;
 }
 
+export interface RequeryMessage extends BaseMessage {
+  type: typeof MessageType.REQUERY;
+  queryKey: string;
+}
+
 export interface ErrorResponseMessage extends BaseMessage {
   type: typeof MessageType.ERROR;
   queryKey?: string;
@@ -44,4 +50,5 @@ export type WebSocketMessage =
   | QueryRequestMessage
   | MutationRequestMessage
   | DataResponseMessage // This generic can now be used with specific types like DataResponseMessage<Counter> or DataResponseMessage<TextEntry[]>
+  | RequeryMessage
   | ErrorResponseMessage;
