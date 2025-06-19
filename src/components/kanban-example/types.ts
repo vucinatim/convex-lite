@@ -1,5 +1,7 @@
 export interface Task {
   _id: string;
+  _createdAt: number;
+  _updatedAt: number;
   title: string;
   description: string;
   columnId: string;

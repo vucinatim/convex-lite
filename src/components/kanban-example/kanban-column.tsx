@@ -34,7 +34,7 @@ export function KanbanColumn({ column }: KanbanColumnProps) {
         isOver ? "border-primary border-2" : "border-zinc-700"
       }`}
     >
-      <div className="flex items-center justify-between mb-3 pb-2 border-b border-zinc-700">
+      <div className="flex items-center justify-between mb-3 pb-2">
         <h2 className="font-semibold text-zinc-100">{column.name}</h2>
         <Button
           size="icon"
@@ -56,7 +56,7 @@ export function KanbanColumn({ column }: KanbanColumnProps) {
         </SortableContext>
       </div>
 
-      <div className="mt-auto pt-2 border-t border-zinc-700">
+      <div className="mt-auto pt-2">
         <TaskDialog columnId={column._id} />
       </div>
     </div>

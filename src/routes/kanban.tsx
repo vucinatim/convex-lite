@@ -10,11 +10,13 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  defaultDropAnimationSideEffects,
 } from "@dnd-kit/core";
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { useState } from "react";
 import { TaskCard } from "@/components/kanban-example/task-card";
 import type { Task } from "@/components/kanban-example/types";
+import type { LocalStore } from "common/query-cache";
 
 export const Route = createFileRoute("/kanban")({
   component: KanbanPage,
@@ -26,7 +28,10 @@ function KanbanPage() {
     // isLoading,
     error,
   } = useQuery(api.columns.getAllColumnsWithTasks);
-  const { mutate: moveTask } = useMutation(api.tasks.moveTask);
+
+  const { mutate: moveTask } = useMutation(
+    api.tasks.moveTask
+  ).withOptimisticUpdate(optimisticallyUpdateColumns);
 
   const [activeTask, setActiveTask] = useState<Task | null>(null);
 
@@ -67,8 +72,19 @@ function KanbanPage() {
       }
     }
 
-    // Reset active task
+    // Reset active task and dragging state
     setActiveTask(null);
+  };
+
+  // Custom drop animation that prevents the float-back
+  const dropAnimation = {
+    sideEffects: defaultDropAnimationSideEffects({
+      styles: {
+        active: {
+          opacity: "0",
+        },
+      },
+    }),
   };
 
   // We can use this to show a loading state, but since data is almost instantly available, it's almost always just an unnecessary flash
@@ -121,7 +137,7 @@ function KanbanPage() {
           </div>
 
           {/* Drag overlay shows a preview of the dragged item */}
-          <DragOverlay>
+          <DragOverlay dropAnimation={dropAnimation}>
             {activeTask ? (
               <div className="w-[300px]">
                 <TaskCard task={activeTask} />
@@ -145,3 +161,51 @@ function KanbanPage() {
     </div>
   );
 }
+
+const optimisticallyUpdateColumns = (
+  localStore: LocalStore,
+  args: { id: string; columnId: string }
+) => {
+  const currentColumns = localStore.getQuery(
+    api.columns.getAllColumnsWithTasks,
+    undefined
+  );
+  if (currentColumns) {
+    // Find the task to move
+    let taskToMove: Task | undefined;
+
+    // Create a deep copy of the columns
+    const updatedColumns = currentColumns.map((column) => {
+      // Find the task in the current column
+      const foundTask = column.tasks?.find((task) => task._id === args.id);
+      if (foundTask) {
+        taskToMove = { ...foundTask };
+
+        // Remove the task from its original column
+        return {
+          ...column,
+          tasks: column.tasks?.filter((task) => task._id !== args.id) || [],
+        };
+      }
+      return { ...column };
+    });
+
+    // Add the task to the target column
+    if (taskToMove) {
+      const targetColumn = updatedColumns.find(
+        (col) => col._id === args.columnId
+      );
+      if (targetColumn) {
+        taskToMove.columnId = args.columnId;
+        targetColumn.tasks = [...(targetColumn.tasks || []), taskToMove];
+      }
+    }
+
+    // Update the local store with the new columns
+    localStore.setQuery(
+      api.columns.getAllColumnsWithTasks,
+      undefined,
+      updatedColumns
+    );
+  }
+};
