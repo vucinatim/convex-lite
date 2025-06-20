@@ -56,7 +56,7 @@ Convex-Lite is built on a few core principles that offer a different set of trad
 
 1.  **Clone & Install:**
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/vucinatim/convex-lite.git
     cd convex-lite
     pnpm install
     ```
