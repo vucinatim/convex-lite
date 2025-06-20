@@ -212,11 +212,11 @@ The single-node setup is very powerful, but it is not horizontally scalable out 
 
 | Architecture Tier | App Server Setup | Database | Real-time Messaging | Est. Concurrent Users (Chat App) | Primary Bottleneck | Next Step to Scale |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Tier 1: Hobbyist**\<br/\>*(The default setup)* | 1x Single Instance | SQLite | In-Memory `Set` | **50 - 200** | SQLite write contention & I/O. | Migrate to a client-server database. |
-| **Tier 2: Professional Single-Node**\<br/\>*(The first big leap)* | 1x Single Instance | PostgreSQL (local) | In-Memory `Set` | **500 - 2,000** | Single Node.js CPU core & memory. | Implement external messaging service. |
-| **Tier 3: Scalable App Layer**\<br/\>*(Ready for growth)* | 3x+ App Cluster | PostgreSQL (local) | **Redis Pub/Sub** | **2,000 - 10,000** | Database connection limits & CPU. | Move the database to a dedicated server. |
-| **Tier 4: Dedicated DB**\<br/\>*(Production Grade)* | 3x+ App Cluster | **Dedicated PostgreSQL Server** | Redis Pub/Sub | **10,000 - 50,000+** | Database performance (CPU/RAM/Disk I/O). | Implement read replicas for the database. |
-| **Tier 5: Enterprise Scale**\<br/\>*(High Availability)* | Auto-scaling Cluster | **Managed / Clustered PostgreSQL** | Managed Redis | **50,000++** | Cost, network latency, application logic complexity. | Database sharding, regional distribution. |
+| **Tier 1: Hobbyist**<br/>(The default setup) | 1x Single Instance | SQLite | In-Memory `Set` | **50 - 200** | SQLite write contention & I/O. | Migrate to a client-server database. |
+| **Tier 2: Professional Single-Node**<br/>(The first big leap) | 1x Single Instance | PostgreSQL (local) | In-Memory `Set` | **500 - 2,000** | Single Node.js CPU core & memory. | Implement external messaging service. |
+| **Tier 3: Scalable App Layer**<br/>(Ready for growth) | 3x+ App Cluster | PostgreSQL (local) | **Redis Pub/Sub** | **2,000 - 10,000** | Database connection limits & CPU. | Move the database to a dedicated server. |
+| **Tier 4: Dedicated DB**<br/>(Production Grade) | 3x+ App Cluster | **Dedicated PostgreSQL Server** | Redis Pub/Sub | **10,000 - 50,000+** | Database performance (CPU/RAM/Disk I/O). | Implement read replicas for the database. |
+| **Tier 5: Enterprise Scale**<br/>(High Availability) | Auto-scaling Cluster | **Managed / Clustered PostgreSQL** | Managed Redis | **50,000++** | Cost, network latency, application logic complexity. | Database sharding, regional distribution. |
 
 -----
 
