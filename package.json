@@ -2,6 +2,9 @@
   "name": "convex-lite",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
+  "description": "A lightweight Convex-inspired full-stack framework",
+  "author": "tim vucina",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"pnpm dev:client\" \"pnpm dev:server\"",

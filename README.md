@@ -1,183 +1,214 @@
 # Convex-Lite
 
-![Convex-Lite Banner](https://placehold.co/1200x300/7c3aed/ffffff?text=Convex-Lite)
+![Convex-Lite Banner](public/convex-lite-logo.png)
 
-A lightweight, self-hostable, open-source framework inspired by [Convex](https://convex.dev), designed to bring a typesafe, real-time backend experience to your React projects.
+An open-source, self-hostable full-stack framework inspired by the developer experience of [Convex](https://convex.dev). It provides end-to-end typesafety and real-time updates on a standard Node.js and Drizzle ORM stack.
 
-Convex-Lite provides end-to-end typesafety from your database schema to your React components, complete with real-time updates via WebSockets and an elegant, explicit API for defining queries and mutations.
+---
+
+## Table of Contents
+
+- [Architecture at a Glance](#architecture-at-a-glance)
+- [Key Design Choices](#key-design-choices)
+- [Core Features](#core-features)
+- [Getting Started](#getting-started)
+- [Defining API Endpoints](#defining-api-endpoints)
+- [Using The Hooks in React](#using-the-hooks-in-react)
+- [Architecture & Scalability FAQ](#architecture--scalability-faq)
+- [Future Work](#future-work)
+- [License](#license)
+
+---
+
+## Architecture at a Glance
+
+This diagram provides a high-level overview of the data flow and key components within the Convex-Lite framework.
+
+![Convex-Lite Architecture Diagram](public/architecture.excalidraw.svg)
+
+---
+
+## Key Design Choices
+
+Convex-Lite is built on a few core principles that offer a different set of trade-offs compared to managed platforms.
+
+* **Self-Hosted & Simple:** Runs on a standard Node.js server, giving you direct control over your deployment environment. This can simplify debugging and provides clear, predictable performance compared to some serverless platforms.
+
+* **Integration with Standard Tooling:** Leverages popular, battle-tested libraries like Drizzle ORM for database access and Zod for validation, allowing developers to use familiar and powerful tools.
+
+* **Explicit Data Invalidation:** The real-time system uses a typesafe, explicit invalidation mechanism (`scheduler.invalidate(...)`). This makes the data flow between mutations and queries clear and easy to reason about.
+
+* **No Tooling Lock-in:** While Convex can be self-hosted, its ecosystem relies on a proprietary ORM and validation library. By using standard libraries like Drizzle and Zod, this project avoids locking you into a specific set of data tools, offering greater flexibility.
 
 ---
 
 ## Core Features
 
--   **🚀 End-to-End Typesafety:** Automatically generate types from your server-side API functions and use them directly in your client-side hooks. "Go to Definition" works out of the box, taking you straight to your backend implementation.
--   **⚡️ Real-time Reactivity:** Mutations automatically invalidate query data, triggering a lightweight refetch on all connected clients. Your UI stays effortlessly in sync with your database.
--   **🛡️ Runtime Validation:** Define argument schemas for your API endpoints using Zod. The server automatically validates incoming requests, making your handlers cleaner and more secure.
--   **📦 Database Agnostic:** Built on top of Drizzle ORM, allowing you to easily switch between databases like SQLite, PostgreSQL, or MySQL with minimal code changes.
--   **🏠 Self-Hostable:** Full control over your infrastructure. Deploy the Node.js server and your database wherever you want.
+-   **🚀 End-to-End Typesafety:** Automatically generate types from your server-side API functions. "Go to Definition" in VS Code works out of the box, taking you straight to your backend implementation.
+-   **⚡️ Optimistic Updates & Real-time Reactivity:** UI updates are instant. Mutations can optimistically update a client-side cache, which then gets seamlessly reconciled with the server state.
+-   **🛡️ Runtime Validation with Zod:** Define argument schemas for your API endpoints using Zod. The server automatically validates incoming requests, making your handlers cleaner and more secure.
+-   **📦 Database Agnostic:** Built on **Drizzle ORM**. Start with zero-config SQLite and easily switch to PostgreSQL or MySQL when you're ready to scale.
+-   **👾 DX-Focused:** A single `pnpm dev` command starts the entire development environment, with automatic code generation and server restarts on file changes.
 
 ---
 
 ## Getting Started
 
-This project is set up as a monorepo with a Vite client and a Node.js server.
-
-1.  **Clone the repository:**
+1.  **Clone & Install:**
     ```bash
     git clone <your-repo-url>
-    cd convex-lite-project
-    ```
-
-2.  **Install dependencies:**
-    ```bash
+    cd convex-lite
     pnpm install
     ```
 
-3.  **Run the development server:**
-    This command starts the Vite client and the Node.js backend server concurrently. It will also watch your `convex/` directory for changes.
+2.  **Run Development Environment:**
+    This single command starts the Vite client, generates the initial API types, and starts the `nodemon`-powered backend server.
     ```bash
     pnpm dev
     ```
 
-4.  **Generate API types:**
-    After defining or changing any function in your `convex/api/` or `convex/admin/` directories, your server will restart and automatically run the script to generate the necessary types in `convex/_generated/`.
+3.  **Start Coding:**
+    Create a new `.ts` file anywhere inside the `convex/` directory (e.g., `convex/tasks.ts`) and start defining your queries and mutations. The watcher will automatically regenerate types and restart the server every time you save.
 
 ---
 
 ## Defining API Endpoints
 
-All your backend logic lives in the `convex/` directory. You define your API using explicit `query` and `mutation` helper functions.
+Your backend logic lives inside the `convex/` directory.
 
 ### Queries
 
-A query is a read-only function that fetches data from your database.
+A query is a read-only function that fetches data. It can accept arguments validated by a Zod schema.
 
-**Example: `convex/api/counter_api.ts`**
+**Example: `convex/messages.ts`**
 ```typescript
-import { eq } from "drizzle-orm";
-import { countersTable } from "convex/schema";
-import { query } from "convex/server";
+import { query } from "convex/lib/server";
+import { z } from "zod";
 
-export const getCounter = query({
-  handler: async ({ db }) => {
-    // Your Drizzle logic here
-    const fetchedCounter = db
-      .select()
-      .from(countersTable)
-      .where(eq(countersTable._id, "the_one_and_only_counter"))
-      .get();
-
-    if (!fetchedCounter) {
-      throw new Error("Counter not found!");
-    }
-    return fetchedCounter;
+export const listByChannel = query({
+  args: z.object({
+    channel: z.string(),
+  }),
+  handler: async ({ db }, { channel }) => {
+    // Your Drizzle logic here.
+    // The `channel` argument is fully typed and validated.
+    return db.query.messages.findMany({
+      where: (messages, { eq }) => eq(messages.channel, channel),
+      orderBy: (messages, { asc }) => asc(messages.createdAt),
+    });
   },
 });
-````
+```
 
 ### Mutations
 
-A mutation is a function that can write to the database. It can also invalidate queries to trigger real-time updates on the client.
+A mutation modifies data and can invalidate queries to trigger real-time updates on all connected clients.
 
-**Example: `convex/api/counter_api.ts`**
-
+**Example: `convex/messages.ts`**
 ```typescript
-import { mutation, query } from "convex/server";
-import { z } from "zod/v4"; // IMPORTANT to use v4!
+import { mutation, query } from "convex/lib/server";
+import { z } from "zod";
 
-// ... getCounter query defined above
-
-export const incrementCounter = mutation({
+// Assume listByChannel is defined above
+export const send = mutation({
   args: z.object({
-    amount: z.number().positive(),
+    channel: z.string(),
+    text: z.string(),
   }),
-  handler: async ({ db, scheduler }, { amount }) => {
-    // Zod validation is handled automatically by the server.
-    // ... your logic to update the counter by `amount` ...
+  handler: async ({ db, scheduler }, { channel, text }) => {
+    await db.insert(tables.messages).values({ channel, text, /*...*/ });
 
-    // Invalidate the getCounter query to notify clients.
-    // This is typesafe and uses the actual function reference.
-    await scheduler.invalidate(getCounter);
-
-    return { success: true };
+    // This is typesafe! Invalidate queries that need to be refetched.
+    await scheduler.invalidate(listByChannel);
   },
 });
 ```
 
------
+---
 
-## Using the Hooks
-
-Convex-Lite provides React hooks to interact with your backend API from your components. These hooks are fully typesafe.
+## Using The Hooks in React
 
 ### `useQuery`
 
-Subscribes a component to a query. It will automatically re-render when the data is invalidated by a mutation.
-
-**Example: `src/App.tsx`**
+Subscribes to a query's data. The component will automatically re-render when the data changes or is invalidated.
 
 ```tsx
-import { useQuery } from "./hooks/use-convex-lite";
+import { useQuery } from "hooks/use-convex-lite";
 import { api } from "convex/_generated/api";
 
-function CounterDisplay() {
-  // `useQuery` for a function with no arguments.
-  const { data: counter, isLoading } = useQuery(api.counter.getCounter);
-
-  if (isLoading) return <div>Loading...</div>;
-
-  return <div>Count: {counter?.value}</div>;
-}
-```
-
-### `useMutation`
-
-Gives you a function to call a mutation from your component.
-
-**Example: `src/App.tsx`**
-
-```tsx
-import { useMutation } from "./hooks/use-convex-lite";
-import { api } from "convex/_generated/api";
-
-function IncrementButton() {
-  // `useMutation` returns a mutate function and its loading state.
-  const { mutate: increment, isLoading } = useMutation(api.counter.incrementCounter);
-
-  const handleClick = () => {
-    // The arguments are fully typed based on your Zod schema.
-    increment({ amount: 1 });
-  };
-
-  return (
-    <button onClick={handleClick} disabled={isLoading}>
-      {isLoading ? "Incrementing..." : "Increment"}
-    </button>
+function MessageList({ channel }: { channel: string }) {
+  // `useQuery` for a function with arguments.
+  const { data: messages, isLoading } = useQuery(
+    api.messages.listByChannel,
+    { channel }
   );
+
+  if (isLoading) return <div>Loading messages...</div>;
+  // ... render messages
 }
 ```
 
------
+### `useMutation` & Optimistic Updates
 
-## Architecture FAQ
+Provides a `mutate` function and allows you to chain `.withOptimisticUpdate` to make your UI feel instantaneous.
 
-Here are some answers to common architectural questions about how Convex-Lite works.
+```tsx
+import { useMutation } from "hooks/use-convex-lite";
+import { api } from "convex/_generated/api";
 
-#### Q: How does "Go to Definition" work without any special editor plugins?
+function SendMessageForm({ channel }: { channel: string }) {
+  const { mutate: sendMessage } = useMutation(api.messages.send)
+    .withOptimisticUpdate((localStore, args) => {
+      // 1. Get the current data from the cache
+      const currentMessages = localStore.getQuery(
+        api.messages.listByChannel, 
+        { channel: args.channel }
+      );
+      if (!currentMessages) return;
 
-This is achieved through advanced TypeScript generics. The code generation script creates a declaration file (`api.d.ts`) that uses a special `ApiFromModules` type helper. This helper constructs the final `api` object's type in a way that preserves the original source location of every function, allowing the TypeScript server to trace it back correctly.
+      // 2. Create the "fake" new message
+      const optimisticMessage = {
+        _id: `temp_${Date.now()}`,
+        text: args.text,
+        channel: args.channel,
+        // ...
+      };
+
+      // 3. Write the new state back to the cache
+      localStore.setQuery(
+        api.messages.listByChannel,
+        { channel: args.channel },
+        [...currentMessages, optimisticMessage]
+      );
+    });
+  
+  // ... form logic to call `sendMessage({ channel, text })`
+}
+```
+
+---
+
+## Architecture & Scalability FAQ
 
 #### Q: Is the framework tied to a specific database?
 
-**No, it is highly database agnostic.** Thanks to Drizzle ORM, your application logic is decoupled from the database's SQL dialect. The only file you need to change to switch from SQLite to PostgreSQL (or another Drizzle-supported DB) is `server/lib/database.ts`, where the initial connection is created. The rest of your application, including all your query and mutation handlers, remains unchanged.
+**No, it is highly database agnostic.** Thanks to Drizzle ORM, your application logic is decoupled from the database. Switching from SQLite to PostgreSQL requires changing only your database connection file (`server/lib/database.ts`). Your query and mutation handlers remain untouched.
 
-#### Q: How scalable is this setup?
+#### Q: How do I handle database schema changes and migrations?
 
-The scalability of your application depends on the architecture you choose. Here is a roadmap of different tiers and what they can handle.
+**This is a major advantage of using Drizzle ORM.** You can use Drizzle's official command-line tool, drizzle-kit, to automatically generate SQL migration files based on changes you make to your convex/schema.ts.
 
-### Scalability Tiers & Estimates
+The typical workflow is very straightforward:
 
-This table provides a ballpark estimate for supporting concurrently connected, active users on different architectures. The actual performance will depend heavily on your specific code efficiency and database schema design.
+1. Modify your schema in convex/schema.ts (e.g., add a new table or a column).
+2. Run a command like `pnpm drizzle-kit generate` in your terminal. drizzle-kit will compare your new schema to the old state and create a new SQL migration file.
+3. Apply the migration to your database using `pnpm drizzle-kit push` (for prototyping) or by running the generated SQL file (for production).
+
+#### Q: How does this scale?
+
+The single-node setup is very powerful, but it is not horizontally scalable out of the box. The primary bottleneck is the in-memory WebSocket connection manager. To scale beyond a single server, you would need to introduce a Pub/Sub message broker like **Redis** to handle broadcasting query invalidations across multiple server instances.
+
+### Scalability Tiers
 
 | Architecture Tier | App Server Setup | Database | Real-time Messaging | Est. Concurrent Users (Chat App) | Primary Bottleneck | Next Step to Scale |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -191,9 +222,12 @@ This table provides a ballpark estimate for supporting concurrently connected, a
 
 ## Future Work
 
-Convex-Lite is a starting point. Here are some ideas for future improvements:
+Convex-Lite provides a solid foundation. Here are some ideas for future improvements:
+* Add first-class support for authentication and user sessions.
+* Implement file storage (e.g., via S3-compatible services).
+* Add support for scheduled functions (crons).
+* Implement a more advanced optimistic update system that can automatically revert on mutation failure.
 
-  - Implement optimistic updates on the client.
-  - Add support for file storage.
-  - Build out a more comprehensive authentication system.
-  - Add support for scheduled functions (crons).
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for more information.
